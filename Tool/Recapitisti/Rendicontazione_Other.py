@@ -16,9 +16,9 @@ df_filtrato = spark.sql( """
     SELECT *
     FROM send.gold_postalizzazione_analytics
     WHERE fine_recapito_stato NOT IN ( 'RECRS006','RECRS013','RECRS015','RECRN006', 'RECRN013', 'RECRN015','RECAG004','RECAG013','RECAG015')
-    AND CEIL(MONTH(r.fine_recapito_data_rendicontazione) / 3) = 3 
-    AND YEAR(r.fine_recapito_data_rendicontazione) = 2024
-    AND r.recapitista IN ('RTI Sailpost-Snem', 'POST & SERVICE')
+    AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 3 
+    AND YEAR(fine_recapito_data_rendicontazione) = 2024
+    AND recapitista IN ('RTI Sailpost-Snem', 'POST & SERVICE')
     """ )
 
 df_filtrato.createTempView("gold_postalizzazione_analytics")

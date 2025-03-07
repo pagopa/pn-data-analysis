@@ -1,19 +1,25 @@
+import configparser
 import uuid
 import os
-from pyspark.sql.functions import lit, to_date, month, years, col
+from typing import Dict
 from pyspark import SparkConf
 from pyspark.sql import SparkSession, DataFrameWriter
 from pyspark.sql.dataframe import DataFrame
 from pyspark.sql.functions import udf
-
+from pyspark.sql.types import StructType, StructField, IntegerType, DateType
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from datetime import datetime, timedelta, date
+from pyspark.sql.functions import col, ceil, when, lit
 
 
 spark = SparkSession.builder.getOrCreate()
 
 ######################################################## Configurazione iniziale: parto dalla silver postalizzazione denormalized 
 
-df=spark.sql("""
+print("Inizio Configurazione...")
+
+df = spark.sql("""
         SELECT
             replace(postalizzazione_requestid, 'pn-cons-000~', '') AS requestid,
             xpagopaextchcxid,
@@ -87,9 +93,13 @@ df=spark.sql("""
             pm_product_type IN ('890', 'AR', 'RS', 'RIS', 'RIR')
     """)
 
+print("Creo la temporary view PREORDERED_EVENTS..")
+
 df.createOrReplaceTempView("PREORDERED_EVENTS")
 
-df_demat= spark.sql("""
+print("Inizio la query di df_demat...")
+
+df_demat = spark.sql("""
         SELECT
             *,
             RTRIM(
@@ -327,7 +337,11 @@ df_demat= spark.sql("""
             PREORDERED_EVENTS
     """)
 
+print("Creo la temporary view di KPI_STRUCTURED_DEMAT...")
+
 df_demat.createOrReplaceTempView("KPI_STRUCTURED_DEMAT")
+
+print("Inizio la query di kpiSLA...")
 
 kpiSla = spark.sql("""
         SELECT
@@ -400,53 +414,46 @@ kpiSla = spark.sql("""
             dematerializzazione.documentType AS dematerializzazione_doc            
         FROM
             KPI_STRUCTURED_DEMAT
-        WHERE fine_recapito_data_rendicontazione IS NOT NULL 
-            AND recapitista IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
-            AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013', 'RECRN006', 'RECRN013','RECAG004', 'RECAG013', 'RECRI005','RECRSI005') 
-            
-            AND (
-                (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
-                OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
-            )
-            AND (
-                YEAR(CASE 
-                    WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
-                    ELSE accettazione_recapitista_con018_data
-                END) = 2023
-            );
+        
 """)
+
+print("Creo la temporary view KPI_SLA...")
 
 kpiSla.createOrReplaceTempView("KPI_SLA")
 
+kpiSla_filtered = spark.sql(""" 
+                            SELECT *
+                            FROM KPI_SLA
+                            WHERE fine_recapito_data_rendicontazione IS NOT NULL 
+                            AND recapitista IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
+                            AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013', 'RECRN006', 'RECRN013','RECAG004', 'RECAG013', 'RECRI005','RECRSI005') 
+                            
+                            AND (
+                                (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
+                                OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
+                            )
+                            AND (
+                                YEAR(CASE 
+                                    WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
+                                    ELSE accettazione_recapitista_con018_data
+                                END) = 2023
+                            );
+                            """)
 
+print("Creo la temporary view KPI_SLA_FILTERED...")
 
-
-
-
-
-
-
-
-
-
-##################TO DO: inserire kpi sla modificato in DL
-
-##################TO DO: creare la vista KPI_SLA sulla base della vista precedente
-
-#df_filtrato.createTempView("gold_postalizzazione_analytics")
-
-#record_count = spark.sql("SELECT COUNT(*) AS total_records FROM gold_postalizzazione_analytics")
-#record_count.show()
-
-
+kpiSla_filtered.createOrReplaceTempView("KPI_SLA_FILTERED")
 
 ######################################################## Configurazione
+
+print("Except...")
+
 df1 = spark.sql("""
         SELECT * 
-        FROM KPI_SLA
+        FROM KPI_SLA_FILTERED
         EXCEPT  
         SELECT * 
-        FROM KPI_SLA 
+        FROM KPI_SLA_FILTERED
         WHERE fine_recapito_stato NOT IN ('RECRS001C','RECRS003C','RECRSI003C') 
         AND dematerializzazione_stato IS NULL
     """)
@@ -456,9 +463,10 @@ df1.createOrReplaceTempView("KPI_SLA1")
 record_count = spark.sql("SELECT COUNT(*) AS total_records FROM KPI_SLA1")
 record_count.show()
 
-unique_uuid: str = str(uuid.uuid4())
 
 ######################################################## Inizio prima query
+
+print("Inizio Prima Query Esiti...")
 
 df1 = df1.withColumn(
     "tot_esiti",
