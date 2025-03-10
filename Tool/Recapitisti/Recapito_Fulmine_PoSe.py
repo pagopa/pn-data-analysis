@@ -256,9 +256,8 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             45
         )
         .when( # Rilassamento lotto 22,27 Fulmine nei periodi giugno - ottobre-dicembre
-            (F.col("lotto").isin( 22,27)) &
-            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))
-             &
+            (F.col("lotto").isin(22,27)) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01')) |
              (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))),
             30)
         .when(
@@ -420,8 +419,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
         )
      .when( # Rilassamento lotto 27 nei periodi giugno - ottobre-dicembre
             (F.col("lotto").isin(22,27)) &
-            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))
-             &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01')) |
              (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))),
             30)
   .when( # Rilassamento lotto 30 aprile & agosto - settembre
@@ -485,9 +483,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
         )
      .when( # Rilassamento lotto 27 nei periodi giugno - ottobre-dicembre
             (F.col("lotto").isin(22,27)) &
-            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))
-             &
-
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))  |
              (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01'))))
         ,
             30
