@@ -25,9 +25,9 @@ df_filtrato = spark.sql("""
     prodotto, 
     geokey, 
     CASE
-        WHEN recapitista = 'FSU' AND r.prodotto = 'AR' THEN 'FSU - AR'
-        WHEN recapitista = 'FSU' AND r.prodotto = '890' THEN 'FSU - 890'
-        WHEN recapitista = 'FSU' AND r.prodotto = 'RS' THEN 'FSU - RS'
+        WHEN recapitista = 'FSU' AND prodotto = 'AR' THEN 'FSU - AR'
+        WHEN recapitista = 'FSU' AND prodotto = '890' THEN 'FSU - 890'
+        WHEN recapitista = 'FSU' AND prodotto = 'RS' THEN 'FSU - RS'
         ELSE recapitista
     END AS recapitista, 
     lotto, 
@@ -67,14 +67,14 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
   AND recapitista IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
   AND (
       -- Calcolare il trimestre da accettazione_recapitista_con018_data se non è NULL
-      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(r.accettazione_recapitista_con018_data) / 3) = 4)
+      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
       -- Se con018 è NULL, calcolare il trimestre su affido_recapitista_con016_data, se non è NULL
-      OR (r.accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
+      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
   )
   AND (
       -- Anno da accettazione_recapitista_con018_data se non è NULL, altrimenti da affido_recapitista_con016_data
       YEAR(CASE 
-          WHEN accettazione_recapitista_con018_data IS NULL THEN r.affido_recapitista_con016_data + INTERVAL 1 DAY
+          WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
           ELSE accettazione_recapitista_con018_data
       END) = 2023
   )
@@ -152,15 +152,15 @@ festivita_df.createOrReplaceTempView("FestivitaView")
 
 #festivita_df.show(10)
 
-######################################### CSV cap_area
+######################################### CSV cap_zona
 
 schema = StructType([
     StructField("CAP", StringType(), True), 
-    StructField("Area", StringType(), True)
+    StructField("Zona", StringType(), True)
 ])
 
-df_cap_area = spark.read.csv("cap_area.csv", header= True, sep= ";", schema = schema)
-df_cap_area.createOrReplaceTempView("CAP_AREA")
+df_cap_zona = spark.read.csv("cap_zona.csv", header= True, sep= ";", schema = schema)
+df_cap_zona.createOrReplaceTempView("CAP_ZONA")
 
 
 ######################################### Funzione custom per il calcolo dei giorni lavorativi
@@ -196,13 +196,13 @@ festivita = spark.table("FestivitaView")
 holidays = festivita.select(F.collect_list("data").alias("holidays")).collect()[0]["holidays"]
 
 reportsla = spark.table("gold_postalizzazione")
-cap_area = spark.table("CAP_AREA")
+cap_zona = spark.table("CAP_ZONA")
 
 ######################################### Aggiunta della colonna zona e calcolo di tempo_recapito usando datediff_workdays
 
 calcolo_tempo_recapito = (
     reportsla
-    .join(cap_area, reportsla.geokey == cap_area.CAP, "inner")
+    .join(cap_zona, reportsla.geokey == cap_zona.CAP, "inner")
     .withColumn(
         "tempo_recapito",
         F.when(
@@ -264,7 +264,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     ).when(
         F.col("tempo_recapito") <= F.when( # Rilassamento per regione Puglia
             (F.col("recapitista") == 'Poste') &                           
-            (F.col("ente_id") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
+            (F.col("senderpaid") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))),
             45
         )
@@ -352,7 +352,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     .when(
         (F.col("tempo_recapito") <= F.when( # Rilassamento per regione Puglia
             (F.col("recapitista") == 'Poste') &
-            (F.col("ente_id") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
+            (F.col("senderpaid") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
         .when(  # Rilassamento lotto 27 Fulmine nei periodi giugno - ottobre
@@ -424,7 +424,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     "giorni_offerta_standard",
     F.when(  # Rilassamento per regione Puglia
             (F.col("recapitista") == 'Poste') &
-            (F.col("ente_id") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
+            (F.col("senderpaid") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
      .when( # Rilassamento lotto 27 nei periodi giugno - ottobre 
@@ -487,7 +487,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     "giorni_offerta_migliorativa",
     F.when( # Rilassamento Regione Puglia
             (F.col("recapitista") == 'Poste') &
-            (F.col("ente_id") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
+            (F.col("senderpaid") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
      .when( # Rilassamento lotto 27 nei periodi giugno - ottobre
