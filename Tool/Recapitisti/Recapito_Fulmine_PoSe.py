@@ -255,9 +255,11 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))),
             45
         )
-        .when( # Rilassamento lotto 27 Fulmine nei periodi giugno - ottobre
-            (F.col("lotto") == 27) &
-            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
+        .when( # Rilassamento lotto 22,27 Fulmine nei periodi giugno - ottobre-dicembre
+            (F.col("lotto").isin( 22,27)) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))
+             &
+             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))),
             30)
         .when(
             (F.col("lotto").isin([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])) &
@@ -343,8 +345,10 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
         .when(  # Rilassamento lotto 27 Fulmine nei periodi giugno - ottobre
-            (F.col("lotto") == 27) &
-            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
+            (F.col("lotto").isin(22, 27)) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))
+             &
+             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))),
             30)
          .when(
             (F.col("lotto").isin([1, 2, 5, 7, 9]) & (F.col("prodotto") == '890') & F.col("Zona").cast("string").isin(['AM', 'CP', 'EU'])), 4)
@@ -414,9 +418,11 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("senderpaid") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
-     .when( # Rilassamento lotto 27 nei periodi giugno - ottobre 
-            (F.col("lotto") == 27) &
-            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
+     .when( # Rilassamento lotto 27 nei periodi giugno - ottobre-dicembre
+            (F.col("lotto").isin(22,27)) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))
+             &
+             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))),
             30)
   .when( # Rilassamento lotto 30 aprile & agosto - settembre
             (F.col('lotto') == 30) &
@@ -477,9 +483,13 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("senderpaid") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
-     .when( # Rilassamento lotto 27 nei periodi giugno - ottobre
-            (F.col("lotto") == 27) &
-            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
+     .when( # Rilassamento lotto 27 nei periodi giugno - ottobre-dicembre
+            (F.col("lotto").isin(22,27)) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))
+             &
+
+             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01'))))
+        ,
             30
      )
  .when( # Rilassamento lotto 30 aprile & agosto-settembre
