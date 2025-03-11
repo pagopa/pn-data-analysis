@@ -137,8 +137,8 @@ df1 = df1.withColumn(
     F.when(F.col("tentativo_recapito_stato").isin('RECRN010', 'RECRS010', 'RECAG010'),
             F.when(
                 (F.col("recapitista").isin('Poste', 'FSU', 'FSU - AR', 'FSU - RS', 'FSU - 890')) &
-                (F.col("affido_recapitista_CON016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
-                (F.col("affido_recapitista_CON016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
+                (F.col("affido_recapitista_con016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
+                (F.col("affido_recapitista_con016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
                 F.when(
                     F.to_date(F.col("tentativo_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(tentativo_recapito_data), 16)"),
                     ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 16)"))) / 3600).cast("int")
@@ -146,8 +146,8 @@ df1 = df1.withColumn(
             ).when(
                 (F.col("lotto").isin(27, 22)) &
                 (
-                    ((F.col("accettazione_recapitista_CON018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
-                    (F.col("accettazione_recapitista_CON018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")))  |
+                    ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")))  |
                     (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))
                 ),
                 F.when(
@@ -209,16 +209,16 @@ df1 = df1.withColumn(
     "ritardo_messa_in_giacenza",
     F.when(
         (F.col("recapitista").isin("Poste", "FSU", "FSU - AR", "FSU - RS", "FSU - 890")) &
-        (F.col("affido_recapitista_CON016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
-        (F.col("affido_recapitista_CON016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
+        (F.col("affido_recapitista_con016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
+        (F.col("affido_recapitista_con016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("lotto").isin(27, 22)) & (
-            ((F.col("accettazione_recapitista_CON018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
-                    (F.col("accettazione_recapitista_CON018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")) |
+            ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")) |
                     (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))
             )
         ),
@@ -284,16 +284,16 @@ df1 = df1.withColumn(
     "ritardo_accettazione_23L",
     F.when(
         (F.col("recapitista").isin("Poste", "FSU", "FSU - AR", "FSU - RS", "FSU - 890")) &
-        (F.col("affido_recapitista_CON016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
-        (F.col("affido_recapitista_CON016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
+        (F.col("affido_recapitista_con016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
+        (F.col("affido_recapitista_con016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
         F.when(
             F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
             ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("lotto").isin(27, 22)) & (
-            ((F.col("accettazione_recapitista_CON018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
-                    (F.col("accettazione_recapitista_CON018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")) |
+            ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")) |
                     (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))
             )
         ),
@@ -362,8 +362,8 @@ df1 = df1.withColumn(
                                            'RECRS002C', 'RECRS002F', 'RECRS004C', 'RECRS005C'),
         F.when(
             (F.col("recapitista").isin("Poste", "FSU", "FSU - AR", "FSU - RS", "FSU - 890")) &
-            (F.col("affido_recapitista_CON016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
-            (F.col("affido_recapitista_CON016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
+            (F.col("affido_recapitista_con016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
+            (F.col("affido_recapitista_con016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
             F.when(
                 F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 16)"),
                 ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 16)"))) / 3600).cast("int")
@@ -371,8 +371,8 @@ df1 = df1.withColumn(
         ).when(
             # Rilassamento per lotto 27, calcolo sui giorni lavorativi
             (F.col("lotto").isin(27, 22)) & (
-                ((F.col("accettazione_recapitista_CON018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
-                    (F.col("accettazione_recapitista_CON018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp"))) |
+                ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp"))) |
                     (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))
             ),
             F.when(
@@ -442,8 +442,8 @@ df1 = df1.withColumn(
         F.when(
             # Rilassamento per lotto 27, calcolo sui giorni lavorativi
             (F.col("lotto").isin(27, 22)) & (
-                ((F.col("accettazione_recapitista_CON018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
-                    (F.col("accettazione_recapitista_CON018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")))  |
+                ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")))  |
                     (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))
             ),
             F.when(

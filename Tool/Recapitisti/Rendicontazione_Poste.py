@@ -144,7 +144,7 @@ df_demat = spark.sql("""
                 TRANSFORM(
                     FILTER(
                         ordered_events,
-                        e -> e.statusCode == 'CON016'
+                        e -> e.statusCode == 'con016'
                     ),
                     e -> e.statusDateTime
                 ),
