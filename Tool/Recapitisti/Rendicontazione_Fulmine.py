@@ -16,7 +16,7 @@ df_filtrato = spark.sql( """
     SELECT *
     FROM send.gold_postalizzazione_analytics
     WHERE fine_recapito_stato NOT IN ( 'RECRS006','RECRS013','RECRS015','RECRN006', 'RECRN013', 'RECRN015','RECAG004','RECAG013','RECAG015')
-    AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 3 
+    AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 4 
     AND YEAR(fine_recapito_data_rendicontazione) = 2024
     AND recapitista IN ('RTI Fulmine - Sol. Camp.', 'RTI Fulmine - Forgilu') 
     """ )
@@ -87,7 +87,7 @@ def datediff_workdays(start_date, end_date):
         days_list = [start_date + timedelta(days=i) for i in range(1, total_days + 1)]
 
 
-        working_days = [d for d in days_list if d.weekday() < 5 and d not in holiday_dates]
+        working_days = [d for d in days_list if d.weekday() < 5 and d.date() not in holiday_dates]
 
         total_working_days = 0
 
