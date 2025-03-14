@@ -84,7 +84,7 @@ def datediff_workdays(start_date, end_date):
 
         total_days = (end_date - start_date).days
 
-        days_list = [start_date + timedelta(days=i) for i in range(1, total_days + 1)]
+        days_list = [start_date + timedelta(days=i) for i in range(0, total_days + 1)]
 
 
         working_days = [d for d in days_list if d.weekday() < 5 and d.date() not in holiday_dates]
@@ -94,9 +94,9 @@ def datediff_workdays(start_date, end_date):
         if working_days:
             total_working_days += len(working_days)
 
-        hours_end_date = 24 - end_date.hour
+        #hours_end_date = 24 - end_date.hour
         
-        return total_working_days * 24  - hours_end_date
+        return total_working_days * 24  + end_date.hours
 
     except Exception as e:
         return None
