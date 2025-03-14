@@ -96,7 +96,7 @@ def datediff_workdays(start_date, end_date):
 
         #hours_end_date = 24 - end_date.hour
         
-        return total_working_days * 24  + end_date.hours
+        return total_working_days * 24  + end_date.hour
 
     except Exception as e:
         return None
