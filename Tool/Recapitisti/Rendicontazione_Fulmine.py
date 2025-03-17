@@ -72,7 +72,6 @@ holiday_dates = {datetime.strptime(date, '%Y-%m-%d').date() for date, _ in festi
 
 ######################################################## Aggiunta delle UDF per il calcolo dei giorni lavorativi lotto 22,27
 
-
 def datediff_workdays(start_date, end_date):
     try:
 
@@ -82,7 +81,9 @@ def datediff_workdays(start_date, end_date):
         if end_date < start_date:
             return 0
 
-        total_days = (end_date - start_date).days
+        end_date_cast = end_date.replace(hour=0, minute=0, second=0)
+
+        total_days = (end_date_cast - start_date).days
 
         days_list = [start_date + timedelta(days=i) for i in range(0, total_days + 1)]
 
