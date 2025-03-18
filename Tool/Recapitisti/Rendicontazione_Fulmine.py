@@ -85,7 +85,7 @@ def datediff_workdays(start_date, end_date):
 
         total_days = (end_date_cast - start_date).days
 
-        days_list = [start_date + timedelta(days=i) for i in range(0, total_days + 1)]
+        days_list = [start_date + timedelta(days=i) for i in range(1, total_days + 1)]
 
 
         working_days = [d for d in days_list if d.weekday() < 5 and d.date() not in holiday_dates]
@@ -152,8 +152,8 @@ df1 = df1.withColumn(
                     (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))
                 ),
                 F.when(
-                    (datediff_workdays_udf(F.col("tentativo_recapito_data"),F.col("tentativo_recapito_data_rendicontazione")) - (31*24)) > 0,
-                    (datediff_workdays_udf(F.col("tentativo_recapito_data"),F.col("tentativo_recapito_data_rendicontazione")) - (31*24)).cast("int")
+                    (datediff_workdays_udf(F.col("tentativo_recapito_data"),F.col("tentativo_recapito_data_rendicontazione")) - (30*24)) > 0,
+                    (datediff_workdays_udf(F.col("tentativo_recapito_data"),F.col("tentativo_recapito_data_rendicontazione")) - (30*24)).cast("int")
                 ).otherwise(None)
             ).when(
                 F.col("prodotto") == 890,
@@ -224,8 +224,8 @@ df1 = df1.withColumn(
             )
         ),
         F.when(
-            (datediff_workdays_udf(F.col("messaingiacenza_recapito_data"),F.col("messaingiacenza_recapito_data_rendicontazione")) - (31*24)) > 0,
-            (datediff_workdays_udf(F.col("messaingiacenza_recapito_data"),F.col("messaingiacenza_recapito_data_rendicontazione")) - (31*24)).cast("int")
+            (datediff_workdays_udf(F.col("messaingiacenza_recapito_data"),F.col("messaingiacenza_recapito_data_rendicontazione")) - (30*24)) > 0,
+            (datediff_workdays_udf(F.col("messaingiacenza_recapito_data"),F.col("messaingiacenza_recapito_data_rendicontazione")) - (30*24)).cast("int")
         )
     ).when(
         (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
@@ -299,8 +299,8 @@ df1 = df1.withColumn(
             )
         ),
         F.when(
-            (datediff_workdays_udf(F.col("accettazione_23L_RECAG012_data"),F.col("demat_23l_data_rendicontazione")) - (31*24)) > 0,
-            (datediff_workdays_udf(F.col("accettazione_23L_RECAG012_data"),F.col("demat_23l_data_rendicontazione")) - (31*24)).cast("int")
+            (datediff_workdays_udf(F.col("accettazione_23L_RECAG012_data"),F.col("demat_23l_data_rendicontazione")) - (30*24)) > 0,
+            (datediff_workdays_udf(F.col("accettazione_23L_RECAG012_data"),F.col("demat_23l_data_rendicontazione")) - (30*24)).cast("int")
         )
     ).when(
         (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
@@ -377,8 +377,8 @@ df1 = df1.withColumn(
                     (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))
             ),
             F.when(
-                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (31*24)) > 0,
-                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (31*24)).cast("int")
+                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (30*24)) > 0,
+                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (30*24)).cast("int")
             )
         ).when(
             (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
@@ -448,8 +448,8 @@ df1 = df1.withColumn(
                     (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))
             ),
             F.when(
-                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (31*24)) > 0,
-                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (31*24)).cast("int")
+                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (30*24)) > 0,
+                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (30*24)).cast("int")
             )
         ).when(
             F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 22)"),
