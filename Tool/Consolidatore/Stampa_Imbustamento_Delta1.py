@@ -124,7 +124,7 @@ df_filtered = df_filtered.withColumn("stampa_imbustamento_con080_data_cast", F.t
 df_filtered = df_filtered.withColumn(
     "affido_consolidatore_data_cut_off",
     F.when(
-        F.col("affido_consolidatore_data").cast("timestamp").substr(12, 8) <= "14:00", 
+        F.col("affido_consolidatore_data").cast("timestamp").substr(12, 8) <= "23:59", 
         F.col("affido_consolidatore_data_cast")
     ).otherwise(F.col("affido_consolidatore_data_cast") + F.expr("INTERVAL 1 DAY"))
 )

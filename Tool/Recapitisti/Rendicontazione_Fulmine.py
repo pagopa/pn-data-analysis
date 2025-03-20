@@ -15,7 +15,7 @@ spark = SparkSession.builder.getOrCreate()
 df_filtrato = spark.sql( """   
     SELECT *
     FROM send.gold_postalizzazione_analytics
-    WHERE fine_recapito_stato NOT IN ( 'RECRS006','RECRS013','RECRS015','RECRN006', 'RECRN013', 'RECRN015','RECAG004','RECAG013','RECAG015')
+    WHERE fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
     AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 4 
     AND YEAR(fine_recapito_data_rendicontazione) = 2024
     AND recapitista IN ('RTI Fulmine - Sol. Camp.', 'RTI Fulmine - Forgilu') 
