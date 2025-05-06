@@ -198,7 +198,7 @@ df1 = df1.withColumn(
                 (F.col("prodotto") == "RIS") & (F.col("lotto") == 21),
                 F.when(
                     F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 16)"),
-                    ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 6)"))) / 3600).cast("int")
+                    ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 16)"))) / 3600).cast("int")
                 ).otherwise(None)
             ).otherwise(0) 
     ).otherwise(None)
