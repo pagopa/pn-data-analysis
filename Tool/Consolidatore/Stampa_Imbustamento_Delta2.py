@@ -153,7 +153,7 @@ df_final = spark.sql("""
                         FROM DF_MODA m LEFT JOIN DF_SOMMA s ON (m.data_slittamento = s.data_slittamento)
                     """)
 
-######################################################## Calcolo dei ritardi
+######################################################## Calcolo dei ritardi - J+2
 
 df_final = df_final.withColumn(
     "ritardo_stampa_imbustamento",
@@ -162,7 +162,7 @@ df_final = df_final.withColumn(
 
 df_final = df_final.withColumn(
     "ritardo_stampa_imbustamento",
-    col("ritardo_stampa_imbustamento") - 1
+    col("ritardo_stampa_imbustamento") - 2
 )
 
 ######################################################## Condizione per restituire NULL se il risultato è <= 0

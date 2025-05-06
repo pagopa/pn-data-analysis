@@ -15,7 +15,7 @@ spark = SparkSession.builder.getOrCreate()
 df_filtrato = spark.sql( """   
     SELECT *
     FROM send.gold_postalizzazione_analytics
-    WHERE fine_recapito_stato NOT IN ( 'RECRS006','RECRS013','RECRS015','RECRN006', 'RECRN013', 'RECRN015','RECAG004','RECAG013','RECAG015')
+    WHERE fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
     AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 3 
     AND YEAR(fine_recapito_data_rendicontazione) = 2024
     AND recapitista IN ('RTI Sailpost-Snem', 'POST & SERVICE')
@@ -87,7 +87,7 @@ def datediff_workdays(start_date, end_date):
         days_list = [start_date + timedelta(days=i) for i in range(1, total_days + 1)]
 
 
-        working_days = [d for d in days_list if d.weekday() < 5 and d not in holiday_dates]
+        working_days = [d for d in days_list if d.weekday() < 5 and d.date() not in holiday_dates]
 
         total_working_days = 0
 
@@ -137,8 +137,8 @@ df1 = df1.withColumn(
     F.when(F.col("tentativo_recapito_stato").isin('RECRN010', 'RECRS010', 'RECAG010'),
             F.when(
                 (F.col("recapitista").isin('Poste', 'FSU', 'FSU - AR', 'FSU - RS', 'FSU - 890')) &
-                (F.col("affido_recapitista_CON016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
-                (F.col("affido_recapitista_CON016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
+                (F.col("affido_recapitista_con016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
+                (F.col("affido_recapitista_con016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
                 F.when(
                     F.to_date(F.col("tentativo_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(tentativo_recapito_data), 16)"),
                     ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 16)"))) / 3600).cast("int")
@@ -208,8 +208,8 @@ df1 = df1.withColumn(
     "ritardo_messa_in_giacenza",
     F.when(
         (F.col("recapitista").isin("Poste", "FSU", "FSU - AR", "FSU - RS", "FSU - 890")) &
-        (F.col("affido_recapitista_CON016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
-        (F.col("affido_recapitista_CON016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
+        (F.col("affido_recapitista_con016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
+        (F.col("affido_recapitista_con016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"))) / 3600).cast("int")
@@ -281,11 +281,11 @@ df1 = df1.withColumn(
     "ritardo_accettazione_23L",
     F.when(
         (F.col("recapitista").isin("Poste", "FSU", "FSU - AR", "FSU - RS", "FSU - 890")) &
-        (F.col("affido_recapitista_CON016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
-        (F.col("affido_recapitista_CON016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
+        (F.col("affido_recapitista_con016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
+        (F.col("affido_recapitista_con016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("lotto").isin(27, 22)) & (
@@ -293,56 +293,56 @@ df1 = df1.withColumn(
                     (F.col("accettazione_recapitista_CON018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")))
         ),
         F.when(
-            (datediff_workdays_udf(F.col("accettazione_23L_RECAG012_data"),F.col("demat_23l_data_rendicontazione")) - (31*24)) > 0,
-            (datediff_workdays_udf(F.col("accettazione_23L_RECAG012_data"),F.col("demat_23l_data_rendicontazione")) - (31*24)).cast("int")
+            (datediff_workdays_udf(F.col("accettazione_23L_RECAG012_data"),F.col("rend_23l_data_rendicontazione")) - (31*24)) > 0,
+            (datediff_workdays_udf(F.col("accettazione_23L_RECAG012_data"),F.col("rend_23l_data_rendicontazione")) - (31*24)).cast("int")
         )
     ).when(
         (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 6)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 6)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 6)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 6)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("prodotto") == 890) & (F.col("lotto").isin(2, 5, 7, 9, 10, 11, 16, 99)),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 8)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 8)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 8)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 8)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("prodotto") == "RS") & (F.col("lotto").isin(21, 22, 23, 24)),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 11)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 11)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 11)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 11)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("prodotto") == "RS") & (F.col("lotto").isin(25, 97)),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("prodotto") == "AR") & (F.col("lotto").isin(26, 28, 29, 98)),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 8)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 8)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 8)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 8)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("prodotto") == "AR") & (F.col("lotto").isin(27, 30)),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 6)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 6)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 6)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 6)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("prodotto") == "RIR") & (F.col("lotto") == 26),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
         )
     ).when(
         (F.col("prodotto") == "RIS") & (F.col("lotto") == 21),
         F.when(
-            F.to_date(F.col("demat_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
-            ((F.unix_timestamp("demat_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
+            F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"),
+            ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23L_RECAG012_data), 16)"))) / 3600).cast("int")
         )
     ).otherwise(0)
 )
@@ -357,8 +357,8 @@ df1 = df1.withColumn(
                                            'RECRS002C', 'RECRS002F', 'RECRS004C', 'RECRS005C'),
         F.when(
             (F.col("recapitista").isin("Poste", "FSU", "FSU - AR", "FSU - RS", "FSU - 890")) &
-            (F.col("affido_recapitista_CON016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
-            (F.col("affido_recapitista_CON016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
+            (F.col("affido_recapitista_con016_data") >= F.lit("2023-07-15 00:00:00").cast("timestamp")) &
+            (F.col("affido_recapitista_con016_data") < F.lit("2024-05-01 00:00:00").cast("timestamp")),
             F.when(
                 F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 16)"),
                 ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 16)"))) / 3600).cast("int")

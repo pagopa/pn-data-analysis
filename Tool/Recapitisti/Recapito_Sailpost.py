@@ -62,7 +62,7 @@ df_filtrato = spark.sql("""
     accettazione_23L_RECAG012_data_rendicontazione
 FROM send.gold_postalizzazione_analytics
 WHERE fine_recapito_data_rendicontazione IS NOT NULL 
-  AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013', 'RECRS015','RECRN006', 'RECRN013', 'RECRN015', 'RECAG004', 'RECAG013', 'RECAG015')
+  AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
   AND recapitista IN ('RTI Sailpost-Snem')
   --- Impostare il numero del trimestre
   AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 2 
