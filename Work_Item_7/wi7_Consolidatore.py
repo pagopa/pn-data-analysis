@@ -11,7 +11,6 @@ from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from datetime import datetime, timedelta, date
 from pyspark.sql.functions import col, ceil, when
-import pandas as pd
 
 spark = SparkSession.builder.getOrCreate()
 
