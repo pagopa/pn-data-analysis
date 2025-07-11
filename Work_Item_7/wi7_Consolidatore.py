@@ -130,7 +130,7 @@ df_start = spark.sql("""
             SELECT iun 
             FROM send.silver_incident_iun
         )
-        AND gna.actual_status <> 'CANCELLED'
+        AND gna.actual_status <> 'CANCELLED' AND gpa.ultimo_evento_stato NOT IN ('P008','P010')
 """)
 
 
