@@ -160,6 +160,42 @@ df_start_with_rank = df_start.withColumn("rank", F.row_number().over(windowSpec)
 
 df_filtered = df_start_with_rank.filter(F.col("rank") == 1).drop("rank")
 
+# Aggiunta della colonna per calcolare la differenza tra gg lavorativi start date - end date
+df_filtered = df_filtered.withColumn(
+    "differenza_gg_lavorativi",
+    F.when(
+        F.col("Cluster") == "Stampa Imbustamento",
+        datediff_workdays_udf(F.col("affido_consolidatore_data"), F.current_timestamp())
+    ).when(
+        F.col("Cluster") == "Materialita Pronta",
+        datediff_workdays_udf(F.col("stampa_imbustamento_con080_data"), F.current_timestamp())
+    ).when(
+        F.col("Cluster") == "Pick Up",
+        datediff_workdays_udf(F.col("stampa_imbustamento_con080_data"), F.current_timestamp())
+    ).when(
+        F.col("Cluster") == "Accettazione Recapitista",
+        datediff_workdays_udf(F.col("affido_recapitista_con016_data"), F.current_timestamp())
+    )
+)
+
+# Aggiunta della colonna per il calcolo dei giorni effettivi fuori SLA
+df_filtered = df_filtered.withColumn(
+    "gg_fuori_sla",
+    F.when(
+        F.col("Cluster") == "Stampa Imbustamento",
+        datediff_workdays_udf(F.col("affido_consolidatore_data"), F.current_timestamp()) - 2 
+    ).when(
+        F.col("Cluster") == "Materialita Pronta",
+        datediff_workdays_udf(F.col("stampa_imbustamento_con080_data"), F.current_timestamp()) - 2 
+    ).when(
+        F.col("Cluster") == "Pick Up",
+        datediff_workdays_udf(F.col("stampa_imbustamento_con080_data"), F.current_timestamp()) - 2
+    ).when(
+        F.col("Cluster") == "Accettazione Recapitista",
+        datediff_workdays_udf(F.col("affido_recapitista_con016_data"), F.current_timestamp()) - 1 
+    )
+)
+
 ########################################################Fine Query
 
 df_filtered.createOrReplaceTempView("DF_OUTPUT")
