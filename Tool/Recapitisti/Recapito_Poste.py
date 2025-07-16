@@ -67,16 +67,16 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
   AND recapitista IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
   AND (
       -- Calcolare il trimestre da accettazione_recapitista_con018_data se non è NULL
-      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
+      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 1)
       -- Se con018 è NULL, calcolare il trimestre su affido_recapitista_con016_data, se non è NULL
-      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
+      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 1)
   )
   AND (
       -- Anno da accettazione_recapitista_con018_data se non è NULL, altrimenti da affido_recapitista_con016_data
       YEAR(CASE 
           WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
           ELSE accettazione_recapitista_con018_data
-      END) = 2023
+      END) = 2024
   )
       
 """)
@@ -256,6 +256,7 @@ calcolo_tempo_recapito = (
 )
 
 ######################################### SLA STANDARD 
+######################################### integrazione del lotto 30BIS
 
 calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     "sla_standard",
@@ -269,7 +270,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             45
         )
         .when( # Rilassamento lotto 27 Fulmine nei periodi giugno - ottobre
-            (F.col("lotto") == 27) &
+            (F.col("lotto") == '27') &
             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
             30)
         .when(
@@ -278,27 +279,27 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             F.col("zona").isin(['AM', 'CP', 'EU']),
             7
         ).when(
-            (F.col("lotto") == 99) &
+            (F.col("lotto") == '99') &
             (F.col("prodotto") == '890') &
             (F.col("zona") == 'EU'),
             7
         ).when(
-            (F.col("lotto") == 21) &
+            (F.col("lotto") == '21') &
             (F.col("prodotto") == 'RIS') &
             (F.col("zona") == 'ZONE_1'),
             10
         ).when(
-            (F.col("lotto") == 21) &
+            (F.col("lotto") == '21') &
             (F.col("prodotto") == 'RIS') &
             F.col("zona").isin(['ZONE_2', 'ZONE_3']),
             20
         ).when(
-            (F.col("lotto") == 26) &
+            (F.col("lotto") == '26') &
             (F.col("prodotto") == 'RIR') &
             (F.col("zona") == 'ZONE_1'),
             10
         ).when(
-            (F.col("lotto") == 26) &
+            (F.col("lotto") == '26') &
             (F.col("prodotto") == 'RIR') &
             F.col("zona").isin(['ZONE_2', 'ZONE_3']),
             20
@@ -306,13 +307,13 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
         True
     ).when(
         F.col("tempo_recapito") <= F.when(
-            (F.col("lotto").isin([21, 22, 23, 24, 25])) &
+            (F.col("lotto").isin(['21', '22', '23', '24', '25'])) &
             (F.col("prodotto") == 'RS') &
             F.col("zona").isin(['AM', 'CP', 'EU']),
             6
         )
         .when( # Rilassamento lotto 30 aprile & agosto-settembre
-            (F.col('lotto') == 30) &
+            (F.col('lotto') == '30') &
             (
                     F.col('affido_recapitista_con016_data').between(F.lit('2024-04-01'), F.lit('2024-05-01')) |
                     F.col('affido_recapitista_con016_data').between(F.lit('2024-08-01'), F.lit('2024-10-01'))
@@ -320,22 +321,27 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             30
         )
         .when( # Rilassamento lotto 30 maggio - luglio
-            (F.col("lotto") == 30) &
+            (F.col("lotto") == '30') &
             (F.col("affido_recapitista_con016_data").between(F.lit('2024-05-01'), F.lit('2024-07-31'))),
         50
         )
         .when(
-            (F.col("lotto").isin([26, 27, 28, 29, 30])) &
+            (F.col("lotto").isin(['26', '27', '28', '29','30'])) &
             (F.col("prodotto") == 'AR') &
             F.col("zona").isin(['AM', 'CP', 'EU']),
             6
         ).when(
-            (F.col("lotto") == 97) &
+            (F.col("lotto") == '97') &
             (F.col("prodotto") == 'RS') &
             F.col("zona").isin(['AM', 'CP', 'EU']),
             6
         ).when(
-            (F.col("lotto") == 98) &
+            (F.col("lotto") == '98') &
+            (F.col("prodotto") == 'AR') &
+            (F.col("zona").isin(['AM', 'CP', 'EU'])),
+            6
+        ).when(
+            (F.col("lotto") == '30BIS') &
             (F.col("prodotto") == 'AR') &
             (F.col("zona").isin(['AM', 'CP', 'EU'])),
             6
@@ -345,6 +351,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
 )
 
 ######################################### SLA MIGLIORATIVA
+######################################### Integrazione del lotto 30BIS
 
 calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     "sla_migliorativa",
@@ -356,64 +363,64 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
         .when(  # Rilassamento lotto 27 Fulmine nei periodi giugno - ottobre
-            (F.col("lotto") == 27) &
+            (F.col("lotto") == '27') &
             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
             30)
-         .when(
-            (F.col("lotto").isin([1, 2, 5, 7, 9]) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU'])), 4)
-            .when(F.col("lotto").isin([3, 4, 6, 8]) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP']), 4)
-            .when(F.col("lotto").isin([3, 4, 6, 8]) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU'), 999)
-            .when((F.col("lotto") == 10) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'AM'), 2)
-            .when((F.col("lotto") == 10) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['CP', 'EU']), 4)
-            .when((F.col("lotto") == 11) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)
-            .when((F.col("lotto") == 12) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP']), 4)
-            .when((F.col("lotto") == 12) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU'), 999)
-            .when((F.col("lotto").isin([13, 14]) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP'])), 2)
-            .when((F.col("lotto").isin([13, 14]) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU')), 4)
-            .when((F.col("lotto") == 15) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
-            .when((F.col("lotto") == 16) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'AM'), 2)
-            .when((F.col("lotto") == 16) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['CP', 'EU']), 4)
-            .when((F.col("lotto") == 17) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
-            .when((F.col("lotto") == 18) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP']), 4)
-            .when((F.col("lotto") == 18) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU'), 999)
-            .when((F.col("lotto") == 19) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'AM'), 2)
-            .when((F.col("lotto") == 19) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['CP', 'EU']), 4)
-            .when((F.col("lotto") == 20) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP']), 4)
-            .when((F.col("lotto") == 20) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU'), 999)
-            .when((F.col("lotto") == 99) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)
-            # Prodotti RS
-            .when((F.col("lotto") == 21) & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
-            .when((F.col("lotto") == 22) & (F.col("prodotto") == 'RS') & (F.col("zona").cast("string") == 'AM'), 3)
-            .when((F.col("lotto") == 22) & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['CP', 'EU']), 999)
-            .when((F.col("lotto") == 23) & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
-            .when((F.col("lotto") == 24) & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
-            .when((F.col("lotto") == 25) & (F.col("prodotto") == 'RS') & (F.col("zona").cast("string") == 'AM'), 5)
-            .when((F.col("lotto") == 25) & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['CP', 'EU']), 999)
-            .when((F.col("lotto") == 97) & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)
-            # Prodotti AR
-            .when((F.col("lotto") == 26) & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
-            .when((F.col("lotto") == 27) & (F.col("prodotto") == 'AR') & (F.col("zona").cast("string") == 'AM'), 3)
-            .when((F.col("lotto") == 27) & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['CP', 'EU']), 999)
-            .when((F.col("lotto") == 28) & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
-            .when((F.col("lotto") == 29) & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
-         .when(  # Rilassamento lotto 30 aprile & agosto-settembre
-            (F.col('lotto') == 30) &
-            (
-                    F.col('affido_recapitista_con016_data').between(F.lit('2024-04-01'), F.lit('2024-05-01')) |
-                    F.col('affido_recapitista_con016_data').between(F.lit('2024-08-01'), F.lit('2024-10-01'))
-            ),
-            30
-         )
-         .when(  # Rilassamento lotto 30 maggio-luglio
-            (F.col("lotto") == 30) &
-            (F.col("affido_recapitista_con016_data").between(F.lit('2024-05-01'), F.lit('2024-07-31'))),
-            50
-         )
-        .when((F.col("lotto") == 30) & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 3)
-        .when((F.col("lotto") == 98) & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)
+        .when((F.col("lotto").isin(['1', '2', '5', '7', '9']) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU'])), 4)
+        .when(F.col("lotto").isin(['3', '4', '6', '8']) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP']), 4)
+        .when(F.col("lotto").isin(['3', '4', '6', '8']) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU'), 999)
+        .when((F.col("lotto") == '10') & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'AM'), 2)
+        .when((F.col("lotto") == '10') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['CP', 'EU']), 4)
+        .when((F.col("lotto") == '11') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)
+        .when((F.col("lotto") == '12') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP']), 4)
+        .when((F.col("lotto") == '12') & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU'), 999)
+        .when((F.col("lotto").isin(['13', '14']) & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP'])), 2)
+        .when((F.col("lotto").isin(['13', '14']) & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU')), 4)
+        .when((F.col("lotto") == '15') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
+        .when((F.col("lotto") == '16') & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'AM'), 2)
+        .when((F.col("lotto") == '16') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['CP', 'EU']), 4)
+        .when((F.col("lotto") == '17') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
+        .when((F.col("lotto") == '18') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP']), 4)
+        .when((F.col("lotto") == '18') & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU'), 999)
+        .when((F.col("lotto") == '19') & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'AM'), 2)
+        .when((F.col("lotto") == '19') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['CP', 'EU']), 4)
+        .when((F.col("lotto") == '20') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP']), 4)
+        .when((F.col("lotto") == '20') & (F.col("prodotto") == '890') & (F.col("zona").cast("string") == 'EU'), 999)
+        .when((F.col("lotto") == '99') & (F.col("prodotto") == '890') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)
+        # Prodotti RS
+        .when((F.col("lotto") == '21') & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
+        .when((F.col("lotto") == '22') & (F.col("prodotto") == 'RS') & (F.col("zona").cast("string") == 'AM'), 3)
+        .when((F.col("lotto") == '22') & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['CP', 'EU']), 999)
+        .when((F.col("lotto") == '23') & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
+        .when((F.col("lotto") == '24') & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
+        .when((F.col("lotto") == '25') & (F.col("prodotto") == 'RS') & (F.col("zona").cast("string") == 'AM'), 5)
+        .when((F.col("lotto") == '25') & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['CP', 'EU']), 999)
+        .when((F.col("lotto") == '97') & (F.col("prodotto") == 'RS') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)
+        # Prodotti AR
+        .when((F.col("lotto") == '26') & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
+        .when((F.col("lotto") == '27') & (F.col("prodotto") == 'AR') & (F.col("zona").cast("string") == 'AM'), 3)
+        .when((F.col("lotto") == '27') & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['CP', 'EU']), 999)
+        .when((F.col("lotto") == '28') & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
+        .when((F.col("lotto") == '29') & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 4)
+        .when((F.col("lotto") == '30BIS') & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)    #Integrazione
+        .when(  # Rilassamento lotto 30 aprile & agosto-settembre
+                (F.col('lotto') == '30') &
+                (
+                        F.col('affido_recapitista_con016_data').between(F.lit('2024-04-01'), F.lit('2024-05-01')) |
+                        F.col('affido_recapitista_con016_data').between(F.lit('2024-08-01'), F.lit('2024-10-01'))
+                ),
+                30
+            )
+        .when(  # Rilassamento lotto 30 maggio-luglio
+        (F.col("lotto") == '30') &
+        (F.col("affido_recapitista_con016_data").between(F.lit('2024-05-01'), F.lit('2024-07-31'))),
+        50
+        )
+        .when((F.col("lotto") == '30') & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 3)
+        .when((F.col("lotto") == '98') & (F.col("prodotto") == 'AR') & F.col("zona").cast("string").isin(['AM', 'CP', 'EU']), 999)
         # Prodotti RIS e RIR
-        .when((F.col("lotto") == 21) & (F.col("prodotto") == 'RIS') & F.col("zona").cast("string").isin(['ZONE_1', 'ZONE_2', 'ZONE_3']), 999)
-        .when((F.col("lotto") == 26) & (F.col("prodotto") == 'RIR') & F.col("zona").cast("string").isin(['ZONE_1', 'ZONE_2', 'ZONE_3']), 999)
+        .when((F.col("lotto") == '21') & (F.col("prodotto") == 'RIS') & F.col("zona").cast("string").isin(['ZONE_1', 'ZONE_2', 'ZONE_3']), 999)
+        .when((F.col("lotto") == '26') & (F.col("prodotto") == 'RIR') & F.col("zona").cast("string").isin(['ZONE_1', 'ZONE_2', 'ZONE_3']), 999)
         ), True)
     .otherwise(False)
 )
@@ -428,11 +435,11 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
      .when( # Rilassamento lotto 27 nei periodi giugno - ottobre 
-            (F.col("lotto") == 27) &
+            (F.col("lotto") == '27') &
             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
             30)
   .when( # Rilassamento lotto 30 aprile & agosto - settembre
-            (F.col('lotto') == 30) &
+            (F.col('lotto') == '30') &
             (
                 F.col('affido_recapitista_con016_data').between(F.lit('2024-04-01'), F.lit('2024-05-01')) |
                 F.col('affido_recapitista_con016_data').between(F.lit('2024-08-01'), F.lit('2024-10-01'))
@@ -440,43 +447,43 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             30
         )
     .when( # Rilassamento lotto 30 aprile & maggio - luglio
-            (F.col("lotto") == 30) &
+            (F.col("lotto") == '30') &
             (F.col("affido_recapitista_con016_data").between(F.lit('2024-05-01'), F.lit('2024-07-31'))),
             # solo fino al 31 luglio
             50
         )
     .when(
-            (F.col("lotto").isin([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])) & (F.col("prodotto") == '890') & F.col("zona").isin(
+            (F.col("lotto").isin(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20'])) & (F.col("prodotto") == '890') & F.col("zona").isin(
             ['AM', 'CP', 'EU']), 7  
         )
     .when(
-            (F.col("lotto").isin([21, 22, 23, 24, 25])) & (F.col("prodotto") == 'RS') & F.col("zona").isin(
+            (F.col("lotto").isin(['21', '22', '23', '24', '25'])) & (F.col("prodotto") == 'RS') & F.col("zona").isin(
                 ['AM', 'CP', 'EU']), 6  
         )
     .when(
-            (F.col("lotto").isin([26, 27, 28, 29, 30])) & (F.col("prodotto") == 'AR') & F.col("zona").isin(
+            (F.col("lotto").isin(['26', '27', '28', '29', '30', '30BIS'])) & (F.col("prodotto") == 'AR') & F.col("zona").isin(  #integrazione
                 ['AM', 'CP', 'EU']), 6  
         )
     .when(
-            (F.col("lotto") == 21) & (F.col("prodotto") == 'RIS') & (F.col("zona") == 'ZONE_1'), 10
+            (F.col("lotto") == '21') & (F.col("prodotto") == 'RIS') & (F.col("zona") == 'ZONE_1'), 10
         )
     .when(
-            (F.col("lotto") == 21) & (F.col("prodotto") == 'RIS') & F.col("zona").isin(['ZONE_2', 'ZONE_3']), 20
+            (F.col("lotto") == '21') & (F.col("prodotto") == 'RIS') & F.col("zona").isin(['ZONE_2', 'ZONE_3']), 20
         )
     .when(
-            (F.col("lotto") == 26) & (F.col("prodotto") == 'RIR') & (F.col("zona") == 'ZONE_1'), 10
+            (F.col("lotto") == '26') & (F.col("prodotto") == 'RIR') & (F.col("zona") == 'ZONE_1'), 10
         )
     .when(
-            (F.col("lotto") == 26) & (F.col("prodotto") == 'RIR') & F.col("zona").isin(['ZONE_2', 'ZONE_3']), 20
+            (F.col("lotto") == '26') & (F.col("prodotto") == 'RIR') & F.col("zona").isin(['ZONE_2', 'ZONE_3']), 20
         )
     .when(
-            (F.col("lotto") == 97) & (F.col("prodotto") == 'RS') & F.col("zona").isin(['AM', 'CP', 'EU']), 6
+            (F.col("lotto") == '97') & (F.col("prodotto") == 'RS') & F.col("zona").isin(['AM', 'CP', 'EU']), 6
         )
     .when(
-            (F.col("lotto") == 98) & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 6
+            (F.col("lotto") == '98') & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 6
         )
     .when(
-            (F.col("lotto") == 99) & (F.col("prodotto") == '890') & (F.col("zona") == 'EU'), 7
+            (F.col("lotto") == '99') & (F.col("prodotto") == '890') & (F.col("zona") == 'EU'), 7
         )
     .otherwise(F.lit(None))
 )
@@ -489,14 +496,14 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("recapitista") == 'Poste') &
             (F.col("senderpaid") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
-        )
-     .when( # Rilassamento lotto 27 nei periodi giugno - ottobre
-            (F.col("lotto") == 27) &
+    )
+    .when( # Rilassamento lotto 27 nei periodi giugno - ottobre
+            (F.col("lotto") == '27') &
             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
             30
-     )
- .when( # Rilassamento lotto 30 aprile & agosto-settembre
-            (F.col('lotto') == 30) &
+    )
+    .when( # Rilassamento lotto 30 aprile & agosto-settembre
+            (F.col('lotto') == '30') &
             (
                 F.col('affido_recapitista_con016_data').between(F.lit('2024-04-01'), F.lit('2024-05-01')) |
                 F.col('affido_recapitista_con016_data').between(F.lit('2024-08-01'), F.lit('2024-10-01'))
@@ -504,40 +511,40 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             30
     )
     .when( # Rilassamento lotto 30 maggio - luglio
-            (F.col("lotto") == 30) &
+            (F.col("lotto") == '30') &
             (F.col("affido_recapitista_con016_data").between(F.lit('2024-05-01'), F.lit('2024-07-31'))),
             50
     )
     .when(
-        (F.col("lotto").isin([1, 2, 5, 7, 9])) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP', 'EU']), 4
+        (F.col("lotto").isin(['1','2', '5', '7', '9'])) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP', 'EU']), 4
     ).when(
-        F.col("lotto").isin([3, 4, 6, 8])& (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 4
+        F.col("lotto").isin(['3','4','6','8'])& (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 4
     )
-    .when((F.col("lotto") == 10) & (F.col("prodotto") == '890') & (F.col("zona") == 'AM'), 2)
-    .when((F.col("lotto") == 10) & (F.col("prodotto") == '890') & F.col("zona").isin(['CP', 'EU']), 4)
-    .when((F.col("lotto") == 12) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 4)
-    .when((F.col("lotto") == 13) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 2)
-    .when((F.col("lotto") == 13) & (F.col("prodotto") == '890') & (F.col("zona") == 'EU'), 4)
-    .when((F.col("lotto") == 14) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 2)
-    .when((F.col("lotto") == 14) & (F.col("prodotto") == '890') & (F.col("zona") == 'EU'), 4)
-    .when((F.col("lotto") == 15) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
-    .when((F.col("lotto") == 16) & (F.col("prodotto") == '890') & (F.col("zona") == 'AM'), 2)
-    .when((F.col("lotto") == 16) & (F.col("prodotto") == '890') & F.col("zona").isin(['CP', 'EU']), 4)
-    .when((F.col("lotto") == 17) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
-    .when((F.col("lotto") == 18) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 4)
-    .when((F.col("lotto") == 19) & (F.col("prodotto") == '890') & (F.col("zona") == 'AM'), 2)
-    .when((F.col("lotto") == 19) & (F.col("prodotto") == '890') & F.col("zona").isin(['CP', 'EU']), 4)
-    .when((F.col("lotto") == 20) & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 4)
-    .when((F.col("lotto") == 21) & (F.col("prodotto") == 'RS') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
-    .when((F.col("lotto") == 22) & (F.col("prodotto") == 'RS') & (F.col("zona") == 'AM'), 3)
-    .when((F.col("lotto") == 23) & (F.col("prodotto") == 'RS') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
-    .when((F.col("lotto") == 24) & (F.col("prodotto") == 'RS') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
-    .when((F.col("lotto") == 25) & (F.col("prodotto") == 'RS') & (F.col("zona") == 'AM'), 5)
-    .when((F.col("lotto") == 26) & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
-    .when((F.col("lotto") == 27) & (F.col("prodotto") == 'AR') & (F.col("zona") == 'AM'), 3)
-    .when((F.col("lotto") == 28) & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
-    .when((F.col("lotto") == 29) & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
-    .when((F.col("lotto") == 30) & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 3)
+    .when((F.col("lotto") == '10') & (F.col("prodotto") == '890') & (F.col("zona") == 'AM'), 2)
+    .when((F.col("lotto") == '10') & (F.col("prodotto") == '890') & F.col("zona").isin(['CP', 'EU']), 4)
+    .when((F.col("lotto") == '12') & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 4)
+    .when((F.col("lotto") == '13') & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 2)
+    .when((F.col("lotto") == '13') & (F.col("prodotto") == '890') & (F.col("zona") == 'EU'), 4)
+    .when((F.col("lotto") == '14') & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 2)
+    .when((F.col("lotto") == '14') & (F.col("prodotto") == '890') & (F.col("zona") == 'EU'), 4)
+    .when((F.col("lotto") == '15') & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
+    .when((F.col("lotto") == '16') & (F.col("prodotto") == '890') & (F.col("zona") == 'AM'), 2)
+    .when((F.col("lotto") == '16') & (F.col("prodotto") == '890') & F.col("zona").isin(['CP', 'EU']), 4)
+    .when((F.col("lotto") == '17') & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
+    .when((F.col("lotto") == '18') & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 4)
+    .when((F.col("lotto") == '19') & (F.col("prodotto") == '890') & (F.col("zona") == 'AM'), 2)
+    .when((F.col("lotto") == '19') & (F.col("prodotto") == '890') & F.col("zona").isin(['CP', 'EU']), 4)
+    .when((F.col("lotto") == '20') & (F.col("prodotto") == '890') & F.col("zona").isin(['AM', 'CP']), 4)
+    .when((F.col("lotto") == '21') & (F.col("prodotto") == 'RS') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
+    .when((F.col("lotto") == '22') & (F.col("prodotto") == 'RS') & (F.col("zona") == 'AM'), 3)
+    .when((F.col("lotto") == '23') & (F.col("prodotto") == 'RS') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
+    .when((F.col("lotto") == '24') & (F.col("prodotto") == 'RS') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
+    .when((F.col("lotto") == '25') & (F.col("prodotto") == 'RS') & (F.col("zona") == 'AM'), 5)
+    .when((F.col("lotto") == '26') & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
+    .when((F.col("lotto") == '27') & (F.col("prodotto") == 'AR') & (F.col("zona") == 'AM'), 3)
+    .when((F.col("lotto") == '28') & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
+    .when((F.col("lotto") == '29') & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 4)
+    .when((F.col("lotto") == '30') & (F.col("prodotto") == 'AR') & F.col("zona").isin(['AM', 'CP', 'EU']), 3)
     .otherwise(F.lit(None))
 )
 
@@ -567,7 +574,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     F.coalesce(F.col("fine_recapito_data_rendicontazione"), F.lit("1970-01-01 00:00:00").cast("timestamp"))
 )
 
-######################################### Filtraggio dei dati per ottenere solo i record con ritardo_recapito > 0
+######################################### Filtraggio dei dati per ottenere solo i record con ritardo_recapito non misurabili - questo ci serve per il ranking
 ranking_data = calcolo_tempo_recapito.filter(
     (F.col("ritardo_recapito").isNotNull())
 )
@@ -617,55 +624,61 @@ calcolo_penale = report_sla_modificato.withColumn(
             F.when(
                 (F.col("sla_standard") == True) & (F.col("sla_migliorativa") == False) & (F.col("percentuale_oggetti_ordinata") < 0.9),
                     F.when(
-                        (F.col("lotto").between(1, 20)) & (F.col("prodotto") == "890"),
+                        (F.col("lotto").isin(['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20'])) & (F.col("prodotto") == "890"),
                         (F.col("costo_recapitista") * 2.0) / 100.0
                     ).when(
-                        (F.col("lotto").between(21, 25)) & (F.col("prodotto") == "RS"),
+                        (F.col("lotto").isin(['21','22','23','24','25'])) & (F.col("prodotto") == "RS"),
                         (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
                     ).when(
-                        (F.col("lotto").between(26, 30)) & (F.col("prodotto") == "AR"),
+                        (F.col("lotto").isin(['26','27','28','29','30'])) & (F.col("prodotto") == "AR"),
                         (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
                     ).when(
-                        (F.col("lotto") == 21) & (F.col("prodotto") == "RIS"),
+                        (F.col("lotto") == '30BIS') & (F.col("prodotto") == "AR"),        #integrazione
+                        (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
+                    ).when(
+                        (F.col("lotto") == '21') & (F.col("prodotto") == "RIS"),
                         F.col("ritardo_recapito") * 0.01
                     ).when(
-                        (F.col("lotto") == 26) & (F.col("prodotto") == "RIR"),
+                        (F.col("lotto") == '26') & (F.col("prodotto") == "RIR"),
                         F.col("ritardo_recapito") * 0.01
                     ).when(
-                        (F.col("lotto") == 97) & (F.col("prodotto") == "RS"),
+                        (F.col("lotto") == '97') & (F.col("prodotto") == "RS"),
                         ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
                     ).when(
-                        (F.col("lotto") == 98) & (F.col("prodotto") == "AR"),
+                        (F.col("lotto") == '98') & (F.col("prodotto") == "AR"),
                         ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
                     ).when(
-                        (F.col("lotto") == 99) & (F.col("prodotto") == "890"),
+                        (F.col("lotto") == '99') & (F.col("prodotto") == "890"),
                         ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
                     ).otherwise(0)
             ).when(
                 (F.col("sla_standard") == False) & (F.col("percentuale_oggetti_ordinata") < 0.98),
                     F.when(
-                        (F.col("lotto").between(1, 20)) & (F.col("prodotto") == "890"),
+                        (F.col("lotto").isin(['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20'])) & (F.col("prodotto") == "890"),
                         (F.col("costo_recapitista") * 2.0) / 100.0
                     ).when(
-                        (F.col("lotto").between(21, 25)) & (F.col("prodotto") == "RS"),
+                        (F.col("lotto").isin(['21','22','23','24','25'])) & (F.col("prodotto") == "RS"),
                         (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
                     ).when(
-                        (F.col("lotto").between(26, 30)) & (F.col("prodotto") == "AR"),
+                        (F.col("lotto").isin(['26','27','28','29','30'])) & (F.col("prodotto") == "AR"),
                         (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
                     ).when(
-                        (F.col("lotto") == 21) & (F.col("prodotto") == "RIS"),
+                        (F.col("lotto") == '30BIS') & (F.col("prodotto") == "AR"),        #integrazione
+                        (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
+                    ).when(
+                        (F.col("lotto") == '21') & (F.col("prodotto") == "RIS"),
                         F.col("ritardo_recapito") * 0.01
                     ).when(
-                        (F.col("lotto") == 26) & (F.col("prodotto") == "RIR"),
+                        (F.col("lotto") == '26') & (F.col("prodotto") == "RIR"),
                         F.col("ritardo_recapito") * 0.01
                     ).when(
-                        (F.col("lotto") == 97) & (F.col("prodotto") == "RS"),
+                        (F.col("lotto") == '97') & (F.col("prodotto") == "RS"),
                         ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
                     ).when(
-                        (F.col("lotto") == 98) & (F.col("prodotto") == "AR"),
+                        (F.col("lotto") == '98') & (F.col("prodotto") == "AR"),
                         ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
                     ).when(
-                        (F.col("lotto") == 99) & (F.col("prodotto") == "890"),
+                        (F.col("lotto") == '99') & (F.col("prodotto") == "890"),
                         ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
                     ).otherwise(0)
             )
@@ -707,10 +720,10 @@ calcolo_riepilogo = report_penali.groupBy(
         F.col("accettazione_recapitista_con018_data").isNotNull(),
         F.year(F.to_date(F.substring(F.col("accettazione_recapitista_con018_data"), 1, 10), 'yyyy-MM-dd'))
     ).otherwise(
-        F.year(F.to_date(F.substring(F.col("affido_recapitista_con016_data"), 1, 10), 'yyyy-MM-dd')) #to do - aggiungere il +1
+        F.year(F.to_date(F.substring(F.date_add(F.col("affido_recapitista_con016_data"), 1), 1, 10), 'yyyy-MM-dd')) #integrazione - aggiunto il +1 sull'anno del trimestre
     ).alias("Anno")
 ).agg(
-    F.sum(F.when((F.col("sla_standard") == False) | (F.col("sla_migliorativa") == False), 1).otherwise(0)).alias("Recapito_con_violazione_SLA"),
+    F.sum(F.when((F.col("corrispettivo_penale_recapito") > 0), 1).otherwise(0)).alias("Recapito_con_violazione_SLA"), #fix: quando trovo il corrispettivo_penale_recapito > 0 allora ho una violazione
     F.count("*").alias("Recapiti_Totali"),
     F.round(
         F.sum(F.col("corrispettivo_penale_recapito"))

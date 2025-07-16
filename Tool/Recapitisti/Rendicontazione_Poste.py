@@ -76,14 +76,14 @@ df1 = spark.sql("""
                             OR (demat_23l_ar_data_rendicontazione IS NULL AND demat_plico_data_rendicontazione IS NOT NULL)
                             OR  (demat_23l_ar_data_rendicontazione IS NOT NULL AND demat_plico_data_rendicontazione IS NULL) )
                     AND (
-                        (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
-                        OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
+                        (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 1)
+                        OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 1)
                     )
                     AND (
                         YEAR(CASE 
                             WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
                             ELSE accettazione_recapitista_con018_data
-                        END) = 2023
+                        END) = 2024
                     );
                     """)
 
@@ -149,7 +149,7 @@ df1 = df1.withColumn(
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 16)"))) / 3600 ).cast("int")
             ).otherwise(None)
         ).when(
-            (F.col("lotto") == 27) &
+            (F.col("lotto") == '27') &
             (
                 ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
                 (F.col("accettazione_recapitista_con018_data") < F.lit("2024-08-01 00:00:00").cast("timestamp"))) |
@@ -161,46 +161,46 @@ df1 = df1.withColumn(
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 31)"))) / 3600).cast("int")
             ).otherwise(None)
         ).when(
-            F.col("prodotto") == 890,
+            F.col("prodotto") == "890",
             F.when(
-                F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20) &
+                F.col("lotto").isin('1','3','4','6','8','12','13','14','15','17','18','19','20') &
                 (F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 6)")),
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 6)"))) / 3600).cast("int")
             ).when(
-                F.col("lotto").isin(2, 5, 7, 9, 10, 11, 16, 99) &
+                F.col("lotto").isin('2','5','7','9','10','11','16','99') &
                 (F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 8)")),
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 8)"))) / 3600).cast("int")
             ).otherwise(None)
         ).when(
             F.col("prodotto") == "RS",
             F.when(
-                F.col("lotto").isin(21, 22, 23, 24) &
+                F.col("lotto").isin('21','22','23','24') &
                 (F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 11)")),
             ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 11)"))) / 3600).cast("int")
             ).when(
-                F.col("lotto").isin(25, 97) &
+                F.col("lotto").isin('25','97') &
                 (F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 16)")),
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 16)"))) / 3600).cast("int")
             ).otherwise(None)
         ).when(
             F.col("prodotto") == "AR",
             F.when(
-                F.col("lotto").isin(26, 28, 29, 98) &
+                F.col("lotto").isin('26','28','29','30BIS','98') &   #integrazione
                 (F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 8)")),
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 8)"))) / 3600).cast("int")
             ).when(
-                F.col("lotto").isin(27, 30) &
+                F.col("lotto").isin('27','30') &
                 (F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 6)")),
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 6)"))) / 3600).cast("int")
             ).otherwise(None)
         ).when(
-            (F.col("prodotto") == "RIR") & (F.col("lotto") == 26),
+            (F.col("prodotto") == "RIR") & (F.col("lotto") == '26'),
             F.when(
                 F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 16)"),
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 16)"))) / 3600).cast("int")
             ).otherwise(None)
         ).when(
-            (F.col("prodotto") == "RIS") & (F.col("lotto") == 21),
+            (F.col("prodotto") == "RIS") & (F.col("lotto") == '21'),
             F.when(
                 F.col("tentativo_recapito_data_rendicontazione").cast("date") >= F.expr("date_add(tentativo_recapito_data, 16)"),
                 ((F.unix_timestamp("tentativo_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(tentativo_recapito_data), 16)"))) / 3600).cast("int")
@@ -222,7 +222,7 @@ df1 = df1.withColumn(
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("lotto") == 27) & (
+        (F.col("lotto") == '27') & (
             (F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
             (F.col("accettazione_recapitista_con018_data") < F.lit("2024-08-01 00:00:00").cast("timestamp"))
         ) | (
@@ -234,49 +234,49 @@ df1 = df1.withColumn(
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 31)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
+        (F.col("prodotto") == '890') & (F.col("lotto").isin('1','3','4','6','8','12','13','14','15','17','18','19','20')),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 6)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 6)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == 890) & (F.col("lotto").isin(2, 5, 7, 9, 10, 11, 16, 99)),
+        (F.col("prodotto") == '890') & (F.col("lotto").isin('2','5','7','9','10','11','16','99')),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 8)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 8)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "RS") & (F.col("lotto").isin(21, 22, 23, 24)),
+        (F.col("prodotto") == "RS") & (F.col("lotto").isin('21', '22', '23', '24')),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 11)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 11)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "RS") & (F.col("lotto").isin(25, 97)),
+        (F.col("prodotto") == "RS") & (F.col("lotto").isin('25', '97')),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "AR") & (F.col("lotto").isin(26, 28, 29, 98)),
+        (F.col("prodotto") == "AR") & (F.col("lotto").isin('26', '28', '29', '30BIS','98')), #integrazione
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 8)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 8)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "AR") & (F.col("lotto").isin(27, 30)),
+        (F.col("prodotto") == "AR") & (F.col("lotto").isin('27', '30')),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 6)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 6)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "RIR") & (F.col("lotto") == 26),
+        (F.col("prodotto") == "RIR") & (F.col("lotto") == '26'),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "RIS") & (F.col("lotto") == 21),
+        (F.col("prodotto") == "RIS") & (F.col("lotto") == '21'),
         F.when(
             F.to_date(F.col("messaingiacenza_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"),
             ((F.unix_timestamp("messaingiacenza_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(messaingiacenza_recapito_data), 16)"))) / 3600).cast("int")
@@ -297,7 +297,7 @@ df1 = df1.withColumn(
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 16)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("lotto").isin(27, 22)) & (
+        (F.col("lotto").isin('27', '22')) & (
             (F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
             (F.col("accettazione_recapitista_con018_data") < F.lit("2024-08-01 00:00:00").cast("timestamp"))
         ) | (
@@ -309,49 +309,49 @@ df1 = df1.withColumn(
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 31)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
+        (F.col("prodotto") == '890') & (F.col("lotto").isin('1', '3', '4', '6', '8', '12', '13', '14', '15', '17', '18', '19', '20')),
         F.when(
             F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23l_recag012_data), 6)"),
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 6)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == 890) & (F.col("lotto").isin(2, 5, 7, 9, 10, 11, 16, 99)),
+        (F.col("prodotto") == '890') & (F.col("lotto").isin('2','5','7','9','10','11','16','99')),
         F.when(
             F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23l_recag012_data), 8)"),
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 8)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "RS") & (F.col("lotto").isin(21, 22, 23, 24)),
+        (F.col("prodotto") == "RS") & (F.col("lotto").isin('21','22','23','24')),
         F.when(
             F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23l_recag012_data), 11)"),
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 11)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "RS") & (F.col("lotto").isin(25, 97)),
+        (F.col("prodotto") == "RS") & (F.col("lotto").isin('25', '97')),
         F.when(
             F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23l_recag012_data), 16)"),
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 16)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "AR") & (F.col("lotto").isin(26, 28, 29, 98)),
+        (F.col("prodotto") == "AR") & (F.col("lotto").isin('26', '28', '29', '30BIS', '98')),  #integrazione
         F.when(
             F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23l_recag012_data), 8)"),
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 8)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "AR") & (F.col("lotto").isin(27, 30)),
+        (F.col("prodotto") == "AR") & (F.col("lotto").isin('27', '30')),
         F.when(
             F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23l_recag012_data), 6)"),
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 6)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "RIR") & (F.col("lotto") == 26),
+        (F.col("prodotto") == "RIR") & (F.col("lotto") == '26'),
         F.when(
             F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23l_recag012_data), 16)"),
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 16)"))) / 3600).cast("int")
         )
     ).when(
-        (F.col("prodotto") == "RIS") & (F.col("lotto") == 21),
+        (F.col("prodotto") == "RIS") & (F.col("lotto") == '21'),
         F.when(
             F.to_date(F.col("rend_23l_data_rendicontazione")) >= F.expr("date_add(to_date(accettazione_23l_recag012_data), 16)"),
             ((F.unix_timestamp("rend_23l_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(accettazione_23l_recag012_data), 16)"))) / 3600).cast("int")
@@ -381,7 +381,7 @@ df1 = df1.withColumn(
                 )
             ).when(
                 # Rilassamento per lotto 27, calcolo sui giorni lavorativi
-                (F.col("lotto").isin(27, 22)) & (
+                (F.col("lotto").isin('27', '22')) & (
                     ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
                         (F.col("accettazione_recapitista_con018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")))
                 ),
@@ -390,49 +390,49 @@ df1 = df1.withColumn(
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 31)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
+                (F.col("prodotto") == '890') & (F.col("lotto").isin('1', '3', '4', '6', '8', '12', '13', '14', '15', '17', '18', '19', '20')),
                 F.when(
                     F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 6)"),
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 6)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == 890) & (F.col("lotto").isin(2, 5, 7, 9, 10, 11, 16, 99)),
+                (F.col("prodotto") == '890') & (F.col("lotto").isin('2', '5', '7', '9', '10', '11', '16','99')),
                 F.when(
                     F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 8)"),
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 8)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "RS") & (F.col("lotto").isin(21, 22, 23, 24)),
+                (F.col("prodotto") == "RS") & (F.col("lotto").isin('21', '22', '23', '24')),
                 F.when(
                     F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 11)"),
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 11)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "RS") & (F.col("lotto").isin(25, 97)),
+                (F.col("prodotto") == "RS") & (F.col("lotto").isin('25', '97')),
                 F.when(
                     F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 16)"),
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 16)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "AR") & (F.col("lotto").isin(26, 28, 29, 98)),
+                (F.col("prodotto") == "AR") & (F.col("lotto").isin('26', '28', '29', '30BIS', '98')), #integrazione
                 F.when(
                     F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 8)"),
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 8)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "AR") & (F.col("lotto").isin(27, 30)),
+                (F.col("prodotto") == "AR") & (F.col("lotto").isin('27', '30')),
                 F.when(
                     F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 6)"),
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 6)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "RIR") & (F.col("lotto") == 26),
+                (F.col("prodotto") == "RIR") & (F.col("lotto") == '26'),
                 F.when(
                     F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 16)"),
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 16)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "RIS") & (F.col("lotto") == 21),
+                (F.col("prodotto") == "RIS") & (F.col("lotto") == '21'),
                 F.when(
                     F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 16)"),
                     ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 16)"))) / 3600).cast("int")
@@ -449,7 +449,7 @@ df1 = df1.withColumn(
                 )
             ).when(
                 # Rilassamento per lotto 27, calcolo sui giorni lavorativi
-                (F.col("lotto").isin(27, 22)) & (
+                (F.col("lotto").isin('27', '22')) & (
                     ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
                         (F.col("accettazione_recapitista_con018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")))
                 ),
@@ -458,49 +458,49 @@ df1 = df1.withColumn(
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 31)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
+                (F.col("prodotto") == '890') & (F.col("lotto").isin('1', '3', '4', '6', '8', '12', '13', '14', '15', '17', '18', '19', '20')),
                 F.when(
                     F.to_date(F.col("dematerializzazione_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 6)"),
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 6)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == 890) & (F.col("lotto").isin(2, 5, 7, 9, 10, 11, 16, 99)),
+                (F.col("prodotto") == '890') & (F.col("lotto").isin('2', '5', '7', '9', '10', '11', '16', '99')),
                 F.when(
                     F.to_date(F.col("dematerializzazione_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 8)"),
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 8)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "RS") & (F.col("lotto").isin(21, 22, 23, 24)),
+                (F.col("prodotto") == "RS") & (F.col("lotto").isin('21', '22', '23', '24')),
                 F.when(
                     F.to_date(F.col("dematerializzazione_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 11)"),
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 11)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "RS") & (F.col("lotto").isin(25, 97)),
+                (F.col("prodotto") == "RS") & (F.col("lotto").isin('25', '97')),
                 F.when(
                     F.to_date(F.col("dematerializzazione_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 16)"),
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 16)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "AR") & (F.col("lotto").isin(26, 28, 29, 98)),
+                (F.col("prodotto") == "AR") & (F.col("lotto").isin('26', '28', '29', '30BIS', '98')), #integrazione
                 F.when(
                     F.to_date(F.col("dematerializzazione_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 8)"),
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 8)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "AR") & (F.col("lotto").isin(27, 30)),
+                (F.col("prodotto") == "AR") & (F.col("lotto").isin('27', '30')),
                 F.when(
                     F.to_date(F.col("dematerializzazione_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 6)"),
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 6)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "RIR") & (F.col("lotto") == 26),
+                (F.col("prodotto") == "RIR") & (F.col("lotto") == '26'),
                 F.when(
                     F.to_date(F.col("dematerializzazione_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 16)"),
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 16)"))) / 3600).cast("int")
                 )
             ).when(
-                (F.col("prodotto") == "RIS") & (F.col("lotto") == 21),
+                (F.col("prodotto") == "RIS") & (F.col("lotto") == '21'),
                 F.when(
                     F.to_date(F.col("dematerializzazione_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 16)"),
                     ((F.unix_timestamp("dematerializzazione_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 16)"))) / 3600).cast("int")
@@ -520,7 +520,7 @@ df1 = df1.withColumn(
                                            'RECRS002C', 'RECRS002F', 'RECRS004C', 'RECRS005C'),
         F.when(
             # Rilassamento per lotto 27, calcolo con giorni lavorativi
-            (F.col("lotto").isin(27, 22)) & (
+            (F.col("lotto").isin('27', '22')) & (
                 ((F.col("accettazione_recapitista_con018_data") >= F.lit("2024-06-01 00:00:00").cast("timestamp")) &
                     (F.col("accettazione_recapitista_con018_data") < F.lit("2024-11-01 00:00:00").cast("timestamp")))
             ),
