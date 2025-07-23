@@ -691,7 +691,7 @@ calcolo_riepilogo = report_penali.groupBy(
         F.year(F.to_date(F.substring(F.col("fine_recapito_data_rendicontazione"), 1, 10), 'yyyy-MM-dd'))
     ).alias("Anno")
 ).agg(
-    F.sum(F.when((F.col("sla_standard") == False) | (F.col("sla_migliorativa") == False), 1).otherwise(0)).alias("Recapito_con_violazione_SLA"),
+    F.sum(F.when((F.col("corrispettivo_penale_recapito") > 0), 1).otherwise(0)).alias("Recapito_con_violazione_SLA"), #fix: quando trovo il corrispettivo_penale_recapito > 0 allora ho una violazione
     F.count("*").alias("Recapiti_Totali"),
     F.round(
         F.sum(F.col("corrispettivo_penale_recapito"))
