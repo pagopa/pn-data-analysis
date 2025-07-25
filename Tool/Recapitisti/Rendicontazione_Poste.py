@@ -517,7 +517,7 @@ df1 = df1.withColumn(
     F.when(
         F.col("fine_recapito_stato").isin('RECAG003C', 'RECAG003F', 'RECAG007C', 'RECAG008C',
                                            'RECRN002C', 'RECRN002F', 'RECRN004C', 'RECRN005C',
-                                           'RECRS002C', 'RECRS002F', 'RECRS004C', 'RECRS005C'),
+                                           'RECRS002C', 'RECRS002F', 'RECRS004C', 'RECRS005C', 'RECRSI004C', 'RECRI004C'),
         F.when(
             # Rilassamento per lotto 27, calcolo con giorni lavorativi
             (F.col("lotto").isin('27', '22')) & (
@@ -773,6 +773,15 @@ PenaleRendicontazioneOther = (
                         .otherwise(F.col("esiti_tot_no_plico"))) - 0.021) * 1000, 0) * 500, F.lit(0)
                 )
             ).when(
+                (F.col("prodotto").isin('RIR','RIS')) & (F.col("lotto").isin(21, 26)),
+                F.greatest(
+                    F.round(
+                        ((F.when(F.col("somma_esiti_violazione_no_plico").isNull(), F.lit(0))
+                        .otherwise(F.col("somma_esiti_violazione_no_plico")) /
+                        F.when(F.col("esiti_tot_no_plico") == 0, F.lit(None))
+                        .otherwise(F.col("esiti_tot_no_plico"))) - 0.021) * 1000, 0) * 300, F.lit(0)
+                )
+            ).when(
                 (F.col("prodotto") == 'RS') & (F.col("lotto") == 97),
                 F.greatest(F.when(F.col("somma_ritardi").isNull(), F.lit(0))
                             .otherwise(F.col("somma_ritardi") / 24 ) * 0.0678 * 0.001, F.lit(0))
@@ -810,6 +819,15 @@ PenaleRendicontazioneOther = (
                 )
             ).when(
                 (col("prodotto") == "AR") & (col("lotto").between(26, 30)),
+                F.greatest(
+                    F.round(
+                        ((F.coalesce(col("somma_esiti_violazione_plico"), lit(0)) /
+                        col("esiti_tot_plico").cast("double")) - 0.021) * 1000, 0
+                    ) * 300,
+                    lit(0)
+                )
+            ).when(
+                (col("prodotto").isin("RIS","RIR") & (col("lotto").isin(21, 26))),
                 F.greatest(
                     F.round(
                         ((F.coalesce(col("somma_esiti_violazione_plico"), lit(0)) /
