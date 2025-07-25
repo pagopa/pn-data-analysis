@@ -274,7 +274,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))),
             30)
         .when(
-            (F.col("lotto").isin([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])) &
+            (F.col("lotto").isin(['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20'])) &
             (F.col("prodotto") == '890') &
             F.col("zona").isin(['AM', 'CP', 'EU']),
             7

@@ -746,7 +746,7 @@ PenaleRendicontazioneOther = (
             F.when(F.col("esiti_tot_no_plico") == 0, F.lit(None))
             .otherwise(F.col("esiti_tot_no_plico"))) - 0.021) > 0,
             F.when(
-                (F.col("prodotto") == '890') & (F.col("lotto").between(1, 20)),
+                (F.col("prodotto") == '890') & (F.col("lotto").isin('1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20')),
                 F.greatest(
                     F.round(
                         ((F.when(F.col("somma_esiti_violazione_no_plico").isNull(), F.lit(0))
@@ -755,7 +755,7 @@ PenaleRendicontazioneOther = (
                         .otherwise(F.col("esiti_tot_no_plico"))) - 0.021) * 1000, 0) * 500, F.lit(0)
                 )
             ).when(
-                (F.col("prodotto") == 'RS') & (F.col("lotto").between(21, 25)),
+                (F.col("prodotto") == 'RS') & (F.col("lotto").isin('21','22','23','24','25')),
                 F.greatest(
                     F.round(
                         ((F.when(F.col("somma_esiti_violazione_no_plico").isNull(), F.lit(0))
@@ -764,7 +764,7 @@ PenaleRendicontazioneOther = (
                         .otherwise(F.col("esiti_tot_no_plico"))) - 0.021) * 1000, 0) * 300, F.lit(0)
                 )
             ).when(
-                (F.col("prodotto") == 'AR') & (F.col("lotto").between(26, 30)),
+                (F.col("prodotto") == 'AR') & (F.col("lotto").isin('26','27','28','29','30','30BIS')),
                 F.greatest(
                     F.round(
                         ((F.when(F.col("somma_esiti_violazione_no_plico").isNull(), F.lit(0))
@@ -773,7 +773,7 @@ PenaleRendicontazioneOther = (
                         .otherwise(F.col("esiti_tot_no_plico"))) - 0.021) * 1000, 0) * 500, F.lit(0)
                 )
             ).when(
-                (F.col("prodotto").isin('RIR','RIS')) & (F.col("lotto").isin(21, 26)),
+                (F.col("prodotto").isin('RIR','RIS')) & (F.col("lotto").isin('21', '26')),
                 F.greatest(
                     F.round(
                         ((F.when(F.col("somma_esiti_violazione_no_plico").isNull(), F.lit(0))
@@ -782,15 +782,15 @@ PenaleRendicontazioneOther = (
                         .otherwise(F.col("esiti_tot_no_plico"))) - 0.021) * 1000, 0) * 300, F.lit(0)
                 )
             ).when(
-                (F.col("prodotto") == 'RS') & (F.col("lotto") == 97),
+                (F.col("prodotto") == 'RS') & (F.col("lotto") == '97'),
                 F.greatest(F.when(F.col("somma_ritardi").isNull(), F.lit(0))
                             .otherwise(F.col("somma_ritardi") / 24 ) * 0.0678 * 0.001, F.lit(0))
             ).when(
-                (F.col("prodotto") == 'AR') & (F.col("lotto") == 98),
+                (F.col("prodotto") == 'AR') & (F.col("lotto") == '98'),
                 F.greatest(F.when(F.col("somma_ritardi").isNull(), F.lit(0))
                             .otherwise(F.col("somma_ritardi") / 24 ) * 0.0225 * 0.001, F.lit(0))
             ).when(
-                (F.col("prodotto") == '890') & (F.col("lotto") == 99),
+                (F.col("prodotto") == '890') & (F.col("lotto") == '99'),
                 F.greatest(F.when(F.col("somma_ritardi").isNull(), F.lit(0))
                             .otherwise(F.col("somma_ritardi") / 24 ) * 0.19 * 0.001, F.lit(0))
             ).otherwise(0)
@@ -800,7 +800,7 @@ PenaleRendicontazioneOther = (
             ((F.coalesce(col("somma_esiti_violazione_plico"), lit(0)) /
             col("esiti_tot_plico").cast("double")).alias("ratio") - 0.021) > 0,
             F.when(
-                (col("prodotto") == "890") & (col("lotto").between(1, 20)),
+                (col("prodotto") == "890") & (col("lotto").isin('1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20')),
                 F.greatest(
                     F.round(
                         ((F.coalesce(col("somma_esiti_violazione_plico"), lit(0)) /
@@ -809,7 +809,7 @@ PenaleRendicontazioneOther = (
                     lit(0)
                 )
             ).when(
-                (col("prodotto") == "RS") & (col("lotto").between(21, 25)),
+                (col("prodotto") == "RS") & (col("lotto").isin('21','22','23','24','25')),
                 F.greatest(
                     F.round(
                         ((F.coalesce(col("somma_esiti_violazione_plico"), lit(0)) /
@@ -818,7 +818,7 @@ PenaleRendicontazioneOther = (
                     lit(0)
                 )
             ).when(
-                (col("prodotto") == "AR") & (col("lotto").between(26, 30)),
+                (col("prodotto") == "AR") & (col("lotto").isin('26','27','28','29','30','30BIS')),
                 F.greatest(
                     F.round(
                         ((F.coalesce(col("somma_esiti_violazione_plico"), lit(0)) /
@@ -827,7 +827,7 @@ PenaleRendicontazioneOther = (
                     lit(0)
                 )
             ).when(
-                (col("prodotto").isin("RIS","RIR") & (col("lotto").isin(21, 26))),
+                (col("prodotto").isin("RIS","RIR") & (col("lotto").isin('21', '26'))),
                 F.greatest(
                     F.round(
                         ((F.coalesce(col("somma_esiti_violazione_plico"), lit(0)) /
@@ -836,13 +836,13 @@ PenaleRendicontazioneOther = (
                     lit(0)
                 )
             ).when(
-                (col("prodotto") == "RS") & (col("lotto") == 97),
+                (col("prodotto") == "RS") & (col("lotto") == '97'),
                 F.greatest(F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0678 * 0.001, lit(0))
             ).when(
-                (col("prodotto") == "AR") & (col("lotto") == 98),
+                (col("prodotto") == "AR") & (col("lotto") == '98'),
                 F.greatest(F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0225 * 0.001, lit(0))
             ).when(
-                (col("prodotto") == "RS") & (col("lotto") == 99),
+                (col("prodotto") == "RS") & (col("lotto") == '99'),
                 F.greatest(F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.19 * 0.001, lit(0))
             ).otherwise(lit(0))
         ).otherwise(lit(0)).alias("Penale_Rendicontazione_Plico"),
