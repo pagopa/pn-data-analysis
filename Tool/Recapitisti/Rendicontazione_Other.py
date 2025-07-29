@@ -19,7 +19,13 @@ df_filtrato = spark.sql( """
     AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 3 
     AND YEAR(fine_recapito_data_rendicontazione) = 2024
     AND recapitista IN ('RTI Sailpost-Snem', 'POST & SERVICE')
+    AND  requestid NOT IN (
+          SELECT requestid_computed
+          FROM send.silver_postalizzazione_denormalized
+          WHERE statusrequest IN ('PN999', 'PN998')
+    )
     """ )
+#fix PN999 e PN998
 
 df_filtrato.createTempView("gold_postalizzazione_analytics")
 

@@ -84,8 +84,14 @@ df1 = spark.sql("""
                             WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
                             ELSE accettazione_recapitista_con018_data
                         END) = 2024
+                    ) 
+                    AND  requestid NOT IN (
+                        SELECT requestid_computed
+                        FROM send.silver_postalizzazione_denormalized
+                        WHERE statusrequest IN ('PN999', 'PN998')
                     );
                     """)
+#fix PN999 e PN998
 
 print("Creo la temporary view ...")
 
@@ -837,13 +843,27 @@ PenaleRendicontazioneOther = (
                 )
             ).when(
                 (col("prodotto") == "RS") & (col("lotto") == '97'),
-                F.greatest(F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0678 * 0.001, lit(0))
+                F.greatest(
+                    F.round(
+                        F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0678 * 0.001, 
+                        0),  #fix round
+                    lit(0)
+                )
             ).when(
                 (col("prodotto") == "AR") & (col("lotto") == '98'),
-                F.greatest(F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0225 * 0.001, lit(0))
+                F.greatest(
+                    F.round(
+                        F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0225 * 0.001,
+                        0),  #fix round
+                    lit(0)
+                )
             ).when(
                 (col("prodotto") == "RS") & (col("lotto") == '99'),
-                F.greatest(F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.19 * 0.001, lit(0))
+                F.greatest(
+                    F.round(F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.19 * 0.001, 
+                        0),  #fix round
+                    lit(0)
+                )
             ).otherwise(lit(0))
         ).otherwise(lit(0)).alias("Penale_Rendicontazione_Plico"),
 

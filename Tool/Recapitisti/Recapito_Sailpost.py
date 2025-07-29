@@ -67,8 +67,14 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
   --- Impostare il numero del trimestre
   AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 2 
   --- Impostare l'anno
-  AND YEAR(fine_recapito_data_rendicontazione) = 2024   
+  AND YEAR(fine_recapito_data_rendicontazione) = 2024  
+  AND  requestid NOT IN (
+          SELECT requestid_computed
+          FROM send.silver_postalizzazione_denormalized
+          WHERE statusrequest IN ('PN999', 'PN998')
+      )
 """)
+#fix PN999 e PN998
 
 df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 

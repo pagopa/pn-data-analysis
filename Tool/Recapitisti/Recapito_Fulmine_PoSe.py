@@ -68,7 +68,13 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
   AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 3 
   --- Impostare l'anno
   AND YEAR(fine_recapito_data_rendicontazione) = 2024
+  AND  requestid NOT IN (
+          SELECT requestid_computed
+          FROM send.silver_postalizzazione_denormalized
+          WHERE statusrequest IN ('PN999', 'PN998')
+      )
 """)
+#fix PN999 e PN998
 
 df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 
@@ -260,6 +266,14 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01')) |
              (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))),
             30)
+        .when( # Rilassamento lotto 22,27 Fulmine Campania - giugno 25
+            (F.col("lotto").isin(22,27)) & (F.col("regione").isin('Campania')) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2025-06-01'), F.lit('2025-07-01'))), #vedere casi limite 1 luglio e 30 giugno se è incluso
+            45)
+        .when( # Rilassamento lotto 22,27 Fulmine Campania - luglio 25
+            (F.col("lotto").isin(22,27)) & (F.col("regione").isin('Campania')) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2025-07-01'), F.lit('2025-07-08'))), #vedere casi limite 7 luglio se è incluso
+           30)
         .when(
             (F.col("lotto").isin([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])) &
             (F.col("prodotto") == '890') &
@@ -349,7 +363,15 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
              &
              (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))),
             30)
-         .when(
+        .when( # Rilassamento lotto 22,27 Fulmine Campania - giugno 25
+            (F.col("lotto").isin(22,27)) & (F.col("regione").isin('Campania')) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2025-06-01'), F.lit('2025-07-01'))), #vedere casi limite 1 luglio e 30 giugno se è incluso
+            45)
+        .when( # Rilassamento lotto 22,27 Fulmine Campania - luglio 25
+            (F.col("lotto").isin(22,27)) & (F.col("regione").isin('Campania')) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2025-07-01'), F.lit('2025-07-08'))), #vedere casi limite 7 luglio se è incluso
+           30)
+        .when(
             (F.col("lotto").isin([1, 2, 5, 7, 9]) & (F.col("prodotto") == '890') & F.col("Zona").cast("string").isin(['AM', 'CP', 'EU'])), 4)
             .when(F.col("lotto").isin([3, 4, 6, 8]) & (F.col("prodotto") == '890') & F.col("Zona").cast("string").isin(['AM', 'CP']), 4)
             .when(F.col("lotto").isin([3, 4, 6, 8]) & (F.col("prodotto") == '890') & (F.col("Zona").cast("string") == 'EU'), 999)
@@ -422,6 +444,14 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01')) |
              (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01')))),
             30)
+      .when( # Rilassamento lotto 22,27 Fulmine Campania - giugno 25
+            (F.col("lotto").isin(22,27)) & (F.col("regione").isin('Campania')) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2025-06-01'), F.lit('2025-07-01'))), #vedere casi limite 1 luglio e 30 giugno se è incluso
+            45)
+      .when( # Rilassamento lotto 22,27 Fulmine Campania - luglio 25
+            (F.col("lotto").isin(22,27)) & (F.col("regione").isin('Campania')) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2025-07-01'), F.lit('2025-07-08'))), #vedere casi limite 7 luglio se è incluso
+           30)
   .when( # Rilassamento lotto 30 aprile & agosto - settembre
             (F.col('lotto') == 30) &
             (
@@ -481,13 +511,21 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             (F.col("senderpaid") == '135100c9-d464-4abf-a9b1-a10f5d7903b7') &
             (F.col("affido_consolidatore_data").between(F.lit('2023-12-01'), F.lit('2024-01-31'))), 45
         )
-     .when( # Rilassamento lotto 27 nei periodi giugno - ottobre-dicembre
+     .when( # Rilassamento lotto 22, 27 nei periodi giugno - ottobre-dicembre
             (F.col("lotto").isin(22,27)) &
             (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-06-01'), F.lit('2024-11-01'))  |
              (F.col("accettazione_recapitista_con018_data").between(F.lit('2024-12-01'), F.lit('2025-01-01'))))
         ,
             30
      )
+     .when( # Rilassamento lotto 22,27 Fulmine Campania - giugno 25
+            (F.col("lotto").isin(22,27)) & (F.col("regione").isin('Campania')) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2025-06-01'), F.lit('2025-07-01'))), #vedere casi limite 1 luglio e 30 giugno se è incluso
+            45)
+        .when( # Rilassamento lotto 22,27 Fulmine Campania - luglio 25
+            (F.col("lotto").isin(22,27)) & (F.col("regione").isin('Campania')) &
+            (F.col("accettazione_recapitista_con018_data").between(F.lit('2025-07-01'), F.lit('2025-07-08'))), #vedere casi limite 7 luglio se è incluso
+           30)
  .when( # Rilassamento lotto 30 aprile & agosto-settembre
             (F.col('lotto') == 30) &
             (
@@ -549,7 +587,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     )
 
 
-######################################### Gesione casistiche null
+######################################### Gestione casistiche null
 calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     "fine_recapito_data_rendicontazione",
     F.coalesce(F.col("fine_recapito_data_rendicontazione"), F.lit("1970-01-01 00:00:00").cast("timestamp"))
