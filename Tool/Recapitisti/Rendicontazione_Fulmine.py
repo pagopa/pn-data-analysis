@@ -13,70 +13,60 @@ spark = SparkSession.builder.getOrCreate()
 
 # Read dataframe report sla
 df_filtrato = spark.sql( """ 
-    WITH dati_gold_corretti AS (
-    SELECT 
-        *,
-        CASE
-            WHEN codice_oggetto LIKE 'R14%' AND lotto = '25' THEN 'RTI Fulmine - Forgilu'
-            WHEN codice_oggetto LIKE 'R14%' AND lotto IN ('22', '27') THEN 'RTI Fulmine - Sol. Camp.'          
-            WHEN codice_oggetto LIKE '777%' OR codice_oggetto LIKE 'PSTAQ777%' THEN 'POST & SERVICE'
-            WHEN codice_oggetto LIKE '211%' THEN 'RTI Sailpost-Snem'
-            WHEN (codice_oggetto LIKE '697%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%') AND lotto NOT IN ('97','98','99') THEN 'Poste'
-            WHEN (codice_oggetto LIKE '697%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%') AND lotto IN ('97','98','99') THEN 'FSU'
-            ELSE recapitista
-        END AS recapitista_unif
-    FROM send.gold_postalizzazione_analytics
-) SELECT iun,
-        requestid,
-        requesttimestamp,
-        prodotto,
-        geokey,
-        c.area,
-        c.provincia,
-        c.regione,
-        CASE
-            WHEN recapitista_unif = 'FSU' AND prodotto = 'AR' THEN 'FSU - AR'
-            WHEN recapitista_unif = 'FSU' AND prodotto = '890' THEN 'FSU - 890'
-            WHEN recapitista_unif = 'FSU' AND prodotto = 'RS' THEN 'FSU - RS'
-            ELSE recapitista_unif
-        END AS recapitista, 
-        lotto,
-        codice_oggetto,
-        affido_consolidatore_data,
-        stampa_imbustamento_con080_data,
-        affido_recapitista_con016_data,
-        CASE 
-            WHEN accettazione_recapitista_CON018_data IS NULL THEN affido_recapitista_CON016_data + INTERVAL 1 DAY
-            ELSE accettazione_recapitista_CON018_data
-        END AS accettazione_recapitista_CON018_data,
-        affido_conservato_con020_data,
-        materialita_pronta_con09a_data,
-        scarto_consolidatore_stato,
-        scarto_consolidatore_data,
-        tentativo_recapito_stato,
-        tentativo_recapito_data,
-        tentativo_recapito_data_rendicontazione,
-        messaingiacenza_recapito_stato,
-        messaingiacenza_recapito_data,
-        messaingiacenza_recapito_data_rendicontazione,
-        certificazione_recapito_stato,
-        certificazione_recapito_dettagli,
-        certificazione_recapito_data,
-        certificazione_recapito_data_rendicontazione,
-        fine_recapito_stato,
-        fine_recapito_data,
-        fine_recapito_data_rendicontazione,
-        accettazione_23l_recag012_data,
-        accettazione_23l_recag012_data_rendicontazione,
-        rend_23l_stato,
-        rend_23l_data,
-        rend_23l_data_rendicontazione,
-        causa_forza_maggiore_dettagli,
-        causa_forza_maggiore_data,
-        causa_forza_maggiore_data_rendicontazione,
-        demat_23l_ar_data_rendicontazione,
-        demat_plico_data_rendicontazione
-    FROM dati_gold_corretti g LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
+    SELECT  
+    g.iun,
+    g.requestid,
+    g.requesttimestamp,
+    g.prodotto,
+    g.geokey,
+    c.area,
+    c.provincia,
+    c.regione,
+ CASE
+    WHEN COALESCE(i.recapitista_corretto, g.recapitista) = 'FSU' AND g.prodotto = 'AR' THEN 'FSU - AR'
+    WHEN COALESCE(i.recapitista_corretto, g.recapitista) = 'FSU' AND g.prodotto = '890' THEN 'FSU - 890'
+    WHEN COALESCE(i.recapitista_corretto, g.recapitista) = 'FSU' AND g.prodotto = 'RS' THEN 'FSU - RS'
+    ELSE COALESCE(i.recapitista_corretto, g.recapitista)
+ END AS recapitista,
+    COALESCE(i.lotto_corretto, g.lotto) AS lotto,
+    g.codice_oggetto,
+    affido_consolidatore_data,
+    stampa_imbustamento_con080_data,
+    affido_recapitista_con016_data,
+    CASE 
+        WHEN accettazione_recapitista_CON018_data IS NULL THEN affido_recapitista_CON016_data + INTERVAL 1 DAY
+        ELSE accettazione_recapitista_CON018_data
+    END AS accettazione_recapitista_CON018_data,
+    affido_conservato_con020_data,
+    materialita_pronta_con09a_data,
+    scarto_consolidatore_stato,
+    scarto_consolidatore_data,
+    tentativo_recapito_stato,
+    tentativo_recapito_data,
+    tentativo_recapito_data_rendicontazione,
+    messaingiacenza_recapito_stato,
+    messaingiacenza_recapito_data,
+    messaingiacenza_recapito_data_rendicontazione,
+    certificazione_recapito_stato,
+    certificazione_recapito_dettagli,
+    certificazione_recapito_data,
+    certificazione_recapito_data_rendicontazione,
+    fine_recapito_stato,
+    fine_recapito_data,
+    fine_recapito_data_rendicontazione,
+    accettazione_23l_recag012_data,
+    accettazione_23l_recag012_data_rendicontazione,
+    rend_23l_stato,
+    rend_23l_data,
+    rend_23l_data_rendicontazione,
+    causa_forza_maggiore_dettagli,
+    causa_forza_maggiore_data,
+    causa_forza_maggiore_data_rendicontazione,
+    demat_23l_ar_data_rendicontazione,
+    demat_plico_data_rendicontazione
+FROM send.gold_postalizzazione_analytics g 
+LEFT JOIN send_dev.temp_incident i ON (g.requestid = i.requestid)
+LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
     WHERE fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
     AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 4 
     AND YEAR(fine_recapito_data_rendicontazione) = 2024

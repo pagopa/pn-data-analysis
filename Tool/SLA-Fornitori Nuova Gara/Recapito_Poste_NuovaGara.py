@@ -632,74 +632,56 @@ calcolo_tempo_recapito.createOrReplaceTempView("reportSlaModificato")
 
 report_sla_modificato = spark.table("reportSlaModificato")
 
-######################################### Calcolo delle penali
+######################################### Calcolo delle penali ---- parte modificata
 
+######################################### Corrispettivo penale proporzionale in base ai giorni di ritardo 
 calcolo_penale = report_sla_modificato.withColumn(
-    "corrispettivo_penale_recapito",
+    "corrispettivo_penale_proporzionale",
     F.round(
             F.when(
-                (F.col("sla_standard") == True) & (F.col("sla_migliorativa") == False) & (F.col("percentuale_oggetti_ordinata") < 0.9),
+                (F.col("sla_standard") == True) & (F.col("sla_migliorativa") == False) & (F.col("percentuale_oggetti_ordinata") < 0.9), # soglia del 90% perchè sto nello sla standard
+                    # qui dobbiamo calcolare il corrispettivo penale  proporzionale basato sui giorni di ritardo
+                    # se ritardo compreso tra 1 e 60 gg --> penale = (costo recapitista/100)* (gg ritardo / 30 --> arrotondati a 2 decimali)
+                    # altrimenti se ritardo > 60gg --> penale = (costo recapitista/100)*2 --> applico il tetto massimo
+                    
                     F.when(
-                        (F.col("lotto").isin(['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20'])) & (F.col("prodotto") == "890"),
-                        (F.col("costo_recapitista") * 2.0) / 100.0
+                        F.col("ritardo_recapito") < 60,
+                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 30), 2)
                     ).when(
-                        (F.col("lotto").isin(['21','22','23','24','25'])) & (F.col("prodotto") == "RS"),
-                        (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto").isin(['26','27','28','29','30'])) & (F.col("prodotto") == "AR"),
-                        (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto") == '30BIS') & (F.col("prodotto") == "AR"),        #integrazione
-                        (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto") == '21') & (F.col("prodotto") == "RIS"),
-                        F.col("ritardo_recapito") * 0.01
-                    ).when(
-                        (F.col("lotto") == '26') & (F.col("prodotto") == "RIR"),
-                        F.col("ritardo_recapito") * 0.01
-                    ).when(
-                        (F.col("lotto") == '97') & (F.col("prodotto") == "RS"),
-                        ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto") == '98') & (F.col("prodotto") == "AR"),
-                        ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto") == '99') & (F.col("prodotto") == "890"),
-                        ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
-                    ).otherwise(0)
+                        F.col("ritardo_recapito") >= 60,
+                        F.round((F.col("costo_recapitista") / 100) * 2, 2)
+                    ).otherwise(0) #quando rientro in questa casistica? 
+                        
             ).when(
                 (F.col("sla_standard") == False) & (F.col("percentuale_oggetti_ordinata") < 0.98),
-                    F.when(
-                        (F.col("lotto").isin(['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20'])) & (F.col("prodotto") == "890"),
-                        (F.col("costo_recapitista") * 2.0) / 100.0
+                    # qui dobbiamo calcolare il corrispettivo penale  proporzionale basato sui giorni di ritardo
+                    # se ritardo compreso tra 1 e 60 gg --> penale = (costo recapitista/100)* (gg ritardo / 30 --> arrotondati a 2 decimali)
+                    # altrimenti se ritardo > 60gg --> penale = (costo recapitista/100)*2 --> applico il tetto massimo 
+                    
+                   F.when(
+                        F.col("ritardo_recapito") < 60,
+                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 30), 2)
                     ).when(
-                        (F.col("lotto").isin(['21','22','23','24','25'])) & (F.col("prodotto") == "RS"),
-                        (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto").isin(['26','27','28','29','30'])) & (F.col("prodotto") == "AR"),
-                        (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto") == '30BIS') & (F.col("prodotto") == "AR"),        #integrazione
-                        (F.col("costo_recapitista") / 100.0) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto") == '21') & (F.col("prodotto") == "RIS"),
-                        F.col("ritardo_recapito") * 0.01
-                    ).when(
-                        (F.col("lotto") == '26') & (F.col("prodotto") == "RIR"),
-                        F.col("ritardo_recapito") * 0.01
-                    ).when(
-                        (F.col("lotto") == '97') & (F.col("prodotto") == "RS"),
-                        ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto") == '98') & (F.col("prodotto") == "AR"),
-                        ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
-                    ).when(
-                        (F.col("lotto") == '99') & (F.col("prodotto") == "890"),
-                        ((F.col("costo_recapitista") /100) * 0.001) * F.col("ritardo_recapito")
-                    ).otherwise(0)
+                        F.col("ritardo_recapito") >= 60,
+                        F.round((F.col("costo_recapitista") / 100) * 2, 2)
+                    ).otherwise(0) #quando rientro in questa casistica? 
             )
        , 2 )
     )
+    
+######################################### Corrispettivo penale pesato per l'integrazione con la penale di rendicontazione 
+calcolo_penale = report_sla_modificato.withColumn(
+    "corrispettivo_penale_pesato",
+    # Tutto quello che ha la colonna corrispettivo_penale_proporzionale valorizzato --> moltiplicalo * 0.5
+    F.round(
+        F.when(
+            (F.col("corrispettivo_penale_proporzionale").isNotNull()) &
+            (F.col("corrispettivo_penale_proporzionale") > 0),
+            F.col("corrispettivo_penale_proporzionale") * 0.5
+        ).otherwise(0),
+        2
+    )
+)
     
 
 ######################################### Creazione della vista temporanea reportPenali
