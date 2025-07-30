@@ -25,13 +25,33 @@ print("Inizio Configurazione...")
 
 
 df1 = spark.sql(""" 
-                    SELECT  iun,
+                WITH dati_gold_corretti AS (
+                    SELECT 
+                        *,
+                        CASE
+                            WHEN codice_oggetto LIKE 'R14%' AND lotto = '25' THEN 'RTI Fulmine - Forgilu'
+                            WHEN codice_oggetto LIKE 'R14%' AND lotto IN ('22', '27') THEN 'RTI Fulmine - Sol. Camp.'          
+                            WHEN codice_oggetto LIKE '777%' OR codice_oggetto LIKE 'PSTAQ777%' THEN 'POST & SERVICE'
+                            WHEN codice_oggetto LIKE '211%' THEN 'RTI Sailpost-Snem'
+                            WHEN (codice_oggetto LIKE '697%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%') AND lotto NOT IN ('97','98','99') THEN 'Poste'
+                            WHEN (codice_oggetto LIKE '697%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%') AND lotto IN ('97','98','99') THEN 'FSU'
+                            ELSE recapitista
+                        END AS recapitista_unif
+                    FROM send.gold_postalizzazione_analytics
+                  ) SELECT  iun,
                             requestid,
                             requesttimestamp,
                             prodotto,
                             geokey,
-                            recapitista,
-                            recapitista_unificato,
+                            c.area,
+                            c.provincia,
+                            c.regione,
+                            CASE
+                                WHEN recapitista_unif = 'FSU' AND prodotto = 'AR' THEN 'FSU - AR'
+                                WHEN recapitista_unif = 'FSU' AND prodotto = '890' THEN 'FSU - 890'
+                                WHEN recapitista_unif = 'FSU' AND prodotto = 'RS' THEN 'FSU - RS'
+                                ELSE recapitista_unif
+                            END AS recapitista, 
                             lotto,
                             codice_oggetto,
                             affido_consolidatore_data,
@@ -68,9 +88,9 @@ df1 = spark.sql("""
                             causa_forza_maggiore_data_rendicontazione,
                             demat_23l_ar_data_rendicontazione,
                             demat_plico_data_rendicontazione
-                    FROM send.gold_postalizzazione_analytics
+                    FROM dati_gold_corretti g LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
                     WHERE fine_recapito_data_rendicontazione IS NOT NULL 
-                    AND recapitista_unificato = 'Poste'
+                    AND recapitista_unif IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
                     AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013', 'RECRI005', 'RECRSI005')
                     AND  ( (demat_23l_ar_data_rendicontazione IS NOT NULL AND demat_plico_data_rendicontazione IS NOT NULL )
                             OR (demat_23l_ar_data_rendicontazione IS NULL AND demat_plico_data_rendicontazione IS NOT NULL)

@@ -12,13 +12,75 @@ from datetime import datetime, timedelta
 spark = SparkSession.builder.getOrCreate()
 
 # Read dataframe report sla
-df_filtrato = spark.sql( """   
-    SELECT *
+df_filtrato = spark.sql( """ 
+    WITH dati_gold_corretti AS (
+    SELECT 
+        *,
+        CASE
+            WHEN codice_oggetto LIKE 'R14%' AND lotto = '25' THEN 'RTI Fulmine - Forgilu'
+            WHEN codice_oggetto LIKE 'R14%' AND lotto IN ('22', '27') THEN 'RTI Fulmine - Sol. Camp.'          
+            WHEN codice_oggetto LIKE '777%' OR codice_oggetto LIKE 'PSTAQ777%' THEN 'POST & SERVICE'
+            WHEN codice_oggetto LIKE '211%' THEN 'RTI Sailpost-Snem'
+            WHEN (codice_oggetto LIKE '697%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%') AND lotto NOT IN ('97','98','99') THEN 'Poste'
+            WHEN (codice_oggetto LIKE '697%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%') AND lotto IN ('97','98','99') THEN 'FSU'
+            ELSE recapitista
+        END AS recapitista_unif
     FROM send.gold_postalizzazione_analytics
+) SELECT iun,
+        requestid,
+        requesttimestamp,
+        prodotto,
+        geokey,
+        c.area,
+        c.provincia,
+        c.regione,
+        CASE
+            WHEN recapitista_unif = 'FSU' AND prodotto = 'AR' THEN 'FSU - AR'
+            WHEN recapitista_unif = 'FSU' AND prodotto = '890' THEN 'FSU - 890'
+            WHEN recapitista_unif = 'FSU' AND prodotto = 'RS' THEN 'FSU - RS'
+            ELSE recapitista_unif
+        END AS recapitista, 
+        lotto,
+        codice_oggetto,
+        affido_consolidatore_data,
+        stampa_imbustamento_con080_data,
+        affido_recapitista_con016_data,
+        CASE 
+            WHEN accettazione_recapitista_CON018_data IS NULL THEN affido_recapitista_CON016_data + INTERVAL 1 DAY
+            ELSE accettazione_recapitista_CON018_data
+        END AS accettazione_recapitista_CON018_data,
+        affido_conservato_con020_data,
+        materialita_pronta_con09a_data,
+        scarto_consolidatore_stato,
+        scarto_consolidatore_data,
+        tentativo_recapito_stato,
+        tentativo_recapito_data,
+        tentativo_recapito_data_rendicontazione,
+        messaingiacenza_recapito_stato,
+        messaingiacenza_recapito_data,
+        messaingiacenza_recapito_data_rendicontazione,
+        certificazione_recapito_stato,
+        certificazione_recapito_dettagli,
+        certificazione_recapito_data,
+        certificazione_recapito_data_rendicontazione,
+        fine_recapito_stato,
+        fine_recapito_data,
+        fine_recapito_data_rendicontazione,
+        accettazione_23l_recag012_data,
+        accettazione_23l_recag012_data_rendicontazione,
+        rend_23l_stato,
+        rend_23l_data,
+        rend_23l_data_rendicontazione,
+        causa_forza_maggiore_dettagli,
+        causa_forza_maggiore_data,
+        causa_forza_maggiore_data_rendicontazione,
+        demat_23l_ar_data_rendicontazione,
+        demat_plico_data_rendicontazione
+    FROM dati_gold_corretti g LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
     WHERE fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
     AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 4 
     AND YEAR(fine_recapito_data_rendicontazione) = 2024
-    AND recapitista IN ('RTI Fulmine - Sol. Camp.', 'RTI Fulmine - Forgilu') 
+    AND recapitista_unif IN ('RTI Fulmine - Sol. Camp.', 'RTI Fulmine - Forgilu') 
     AND  requestid NOT IN (
           SELECT requestid_computed
           FROM send.silver_postalizzazione_denormalized
@@ -161,6 +223,16 @@ df1 = df1.withColumn(
                     (datediff_workdays_udf(F.col("tentativo_recapito_data"),F.col("tentativo_recapito_data_rendicontazione")) - (30*24)) > 0,
                     (datediff_workdays_udf(F.col("tentativo_recapito_data"),F.col("tentativo_recapito_data_rendicontazione")) - (30*24)).cast("int")
                 ).otherwise(None)
+            ).when(  ### Rilassamento Campania 
+                (F.col("lotto").isin(27, 22)) & (F.col("regione").isin('Campania')) &
+                (
+                    ((F.col("accettazione_recapitista_con018_data") >= F.lit("2025-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2025-07-08 00:00:00").cast("timestamp"))) 
+                ),
+                F.when(
+                    (datediff_workdays_udf(F.col("tentativo_recapito_data"),F.col("tentativo_recapito_data_rendicontazione")) - (10*24)) > 0,
+                    (datediff_workdays_udf(F.col("tentativo_recapito_data"),F.col("tentativo_recapito_data_rendicontazione")) - (10*24)).cast("int")
+                ).otherwise(None)
             ).when(
                 F.col("prodotto") == 890,
                 F.when(
@@ -232,6 +304,16 @@ df1 = df1.withColumn(
         F.when(
             (datediff_workdays_udf(F.col("messaingiacenza_recapito_data"),F.col("messaingiacenza_recapito_data_rendicontazione")) - (30*24)) > 0,
             (datediff_workdays_udf(F.col("messaingiacenza_recapito_data"),F.col("messaingiacenza_recapito_data_rendicontazione")) - (30*24)).cast("int")
+        )
+    ).when(  ### Rilassamento Campania
+        (F.col("lotto").isin(27, 22)) & (F.col("regione").isin('Campania')) & (
+            ((F.col("accettazione_recapitista_con018_data") >= F.lit("2025-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2025-07-08 00:00:00").cast("timestamp")) 
+            )
+        ),
+        F.when(
+            (datediff_workdays_udf(F.col("messaingiacenza_recapito_data"),F.col("messaingiacenza_recapito_data_rendicontazione")) - (10*24)) > 0,
+            (datediff_workdays_udf(F.col("messaingiacenza_recapito_data"),F.col("messaingiacenza_recapito_data_rendicontazione")) - (10*24)).cast("int")
         )
     ).when(
         (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
@@ -307,6 +389,16 @@ df1 = df1.withColumn(
         F.when(
             (datediff_workdays_udf(F.col("accettazione_23l_recag012_data"),F.col("rend_23l_data_rendicontazione")) - (30*24)) > 0,
             (datediff_workdays_udf(F.col("accettazione_23l_recag012_data"),F.col("rend_23l_data_rendicontazione")) - (30*24)).cast("int")
+        )
+    ).when(  ### Rilassamento Campania
+        (F.col("lotto").isin(27, 22)) & (F.col("regione").isin('Campania')) & (
+            ((F.col("accettazione_recapitista_con018_data") >= F.lit("2025-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2025-07-08 00:00:00").cast("timestamp"))
+            )
+        ),
+        F.when(
+            (datediff_workdays_udf(F.col("accettazione_23l_recag012_data"),F.col("rend_23l_data_rendicontazione")) - (10*24)) > 0,
+            (datediff_workdays_udf(F.col("accettazione_23l_recag012_data"),F.col("rend_23l_data_rendicontazione")) - (10*24)).cast("int")
         )
     ).when(
         (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
@@ -385,6 +477,15 @@ df1 = df1.withColumn(
             F.when(
                 (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (30*24)) > 0,
                 (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (30*24)).cast("int")
+            )
+        ).when( ### Rilassamento Campania
+            (F.col("lotto").isin(27, 22)) & (F.col("regione").isin('Campania')) & (
+                ((F.col("accettazione_recapitista_con018_data") >= F.lit("2025-06-01 00:00:00").cast("timestamp")) &
+                    (F.col("accettazione_recapitista_con018_data") < F.lit("2025-07-08 00:00:00").cast("timestamp")))
+            ),
+            F.when(
+                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (10*24)) > 0,
+                (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (10*24)).cast("int")
             )
         ).when(
             (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),

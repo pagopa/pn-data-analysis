@@ -14,20 +14,36 @@ from datetime import datetime, timedelta
 
 spark = SparkSession.builder.getOrCreate()
 
-
+#fix: codice oggetto corretto per i recapitisti
 df_filtrato = spark.sql("""
-   SELECT  
+    WITH dati_gold_corretti AS (
+    SELECT 
+        *,
+        CASE
+            WHEN codice_oggetto LIKE 'R14%' AND lotto = '25' THEN 'RTI Fulmine - Forgilu'
+            WHEN codice_oggetto LIKE 'R14%' AND lotto IN ('22', '27') THEN 'RTI Fulmine - Sol. Camp.'          
+            WHEN codice_oggetto LIKE '777%' OR codice_oggetto LIKE 'PSTAQ777%' THEN 'POST & SERVICE'
+            WHEN codice_oggetto LIKE '211%' THEN 'RTI Sailpost-Snem'
+            WHEN (codice_oggetto LIKE '697%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%') AND lotto NOT IN ('97','98','99') THEN 'Poste'
+            WHEN (codice_oggetto LIKE '697%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%') AND lotto IN ('97','98','99') THEN 'FSU'
+            ELSE recapitista
+        END AS recapitista_unif
+    FROM send.gold_postalizzazione_analytics
+) SELECT  
     senderpaid, 
     iun, 
     requestid, 
     requesttimestamp, 
     prodotto, 
-    geokey, 
+    geokey,
+    c.area,
+    c.provincia,
+    c.regione,
     CASE
-        WHEN recapitista = 'FSU' AND prodotto = 'AR' THEN 'FSU - AR'
-        WHEN recapitista = 'FSU' AND prodotto = '890' THEN 'FSU - 890'
-        WHEN recapitista = 'FSU' AND prodotto = 'RS' THEN 'FSU - RS'
-        ELSE recapitista
+        WHEN recapitista_unif = 'FSU' AND prodotto = 'AR' THEN 'FSU - AR'
+        WHEN recapitista_unif = 'FSU' AND prodotto = '890' THEN 'FSU - 890'
+        WHEN recapitista_unif = 'FSU' AND prodotto = 'RS' THEN 'FSU - RS'
+        ELSE recapitista_unif
     END AS recapitista, 
     lotto, 
     codice_oggetto, 
@@ -60,10 +76,10 @@ df_filtrato = spark.sql("""
     fine_recapito_data_rendicontazione, 
     accettazione_23L_RECAG012_data, 
     accettazione_23L_RECAG012_data_rendicontazione
-FROM send.gold_postalizzazione_analytics
+FROM dati_gold_corretti g LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
 WHERE fine_recapito_data_rendicontazione IS NOT NULL 
   AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
-  AND recapitista IN ('RTI Fulmine - Sol. Camp.', 'RTI Fulmine - Forgilu') 
+  AND recapitista_unif IN ('RTI Fulmine - Sol. Camp.', 'RTI Fulmine - Forgilu') 
   --- Impostare il numero del trimestre
   AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 3 
   --- Impostare l'anno
@@ -145,8 +161,8 @@ festivita_df.createOrReplaceTempView("FestivitaView")
 
 #festivita_df.show(10)
 
-######################################### CSV cap_zona
-
+######################################### CSV cap_zona -- fix: ci importiamo direttamenet la tabella di cap_area_provincia_regione
+"""
 schema = StructType([
     StructField("CAP", StringType(), True), 
     StructField("Zona", StringType(), True)
@@ -154,7 +170,7 @@ schema = StructType([
 
 df_cap_zona = spark.read.csv("cap_zona.csv", header= True, sep= ";", schema = schema)
 df_cap_zona.createOrReplaceTempView("CAP_ZONA")
-
+"""
 
 ######################################### Funzione custom per il calcolo dei giorni lavorativi
 
@@ -189,13 +205,13 @@ festivita = spark.table("FestivitaView")
 holidays = festivita.select(F.collect_list("data").alias("holidays")).collect()[0]["holidays"]
 
 reportsla = spark.table("gold_postalizzazione")
-cap_zona = spark.table("CAP_ZONA")
+#cap_zona = spark.table("CAP_ZONA")
 
 ######################################### Aggiunta della colonna zona e calcolo di tempo_recapito usando datediff_workdays
 
 calcolo_tempo_recapito = (
     reportsla
-    .join(cap_zona, reportsla.geokey == cap_zona.CAP, "inner")
+    #.join(cap_zona, reportsla.geokey == cap_zona.CAP, "inner")
     .withColumn(
         "tempo_recapito",
         F.when(
@@ -245,7 +261,8 @@ calcolo_tempo_recapito = (
         ).otherwise(F.lit(None))
     )
     .withColumn("tempo_recapito", F.col("tempo_recapito").cast("int"))
-    .withColumn("zona", F.col("Zona"))
+    .withColumn("zona", F.col("area"))
+    #.withColumn("zona", F.col("Zona"))
 )
 
 ######################################### SLA STANDARD 
@@ -593,7 +610,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     F.coalesce(F.col("fine_recapito_data_rendicontazione"), F.lit("1970-01-01 00:00:00").cast("timestamp"))
 )
 
-######################################### Filtraggio dei dati per ottenere solo i record con ritardo_recapito > 0
+######################################### Filtraggio dei dati per ottenere solo i record con ritardo_recapito non misurabili - questo ci serve per il ranking
 ranking_data = calcolo_tempo_recapito.filter(
     (F.col("ritardo_recapito").isNotNull())
 )
