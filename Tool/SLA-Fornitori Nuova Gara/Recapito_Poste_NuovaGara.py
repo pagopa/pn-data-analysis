@@ -22,6 +22,7 @@ df_filtrato = spark.sql("""
     g.requestid,
     g.requesttimestamp,
     g.prodotto,
+    g.senderpaid,
     g.geokey,
     c.area,
     c.provincia,
@@ -34,6 +35,7 @@ df_filtrato = spark.sql("""
  END AS recapitista,
     COALESCE(i.lotto_corretto, g.lotto) AS lotto,
     g.codice_oggetto,
+    g.costo_recapitista,
     affido_consolidatore_data,
     stampa_imbustamento_con080_data,
     affido_recapitista_con016_data,
@@ -73,21 +75,21 @@ LEFT JOIN send_dev.temp_incident i ON (g.requestid = i.requestid)
 LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
 WHERE fine_recapito_data_rendicontazione IS NOT NULL
   AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013', 'RECRSI005', 'RECRI005')                               
-  AND recapitista_unif IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
+  AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
   AND (
       -- Calcolare il trimestre da accettazione_recapitista_con018_data se non è NULL
-      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 1)
+      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
       -- Se con018 è NULL, calcolare il trimestre su affido_recapitista_con016_data, se non è NULL
-      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 1)
+      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
   )
   AND (
       -- Anno da accettazione_recapitista_con018_data se non è NULL, altrimenti da affido_recapitista_con016_data
       YEAR(CASE 
           WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
           ELSE accettazione_recapitista_con018_data
-      END) = 2024
+      END) = 2023
   )
-  AND  requestid NOT IN (
+  AND  g.requestid NOT IN (
           SELECT requestid_computed
           FROM send.silver_postalizzazione_denormalized
           WHERE statusrequest IN ('PN999', 'PN998')
@@ -578,11 +580,6 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             )
     )
 
-# Aggiungo la colonna "lotto_effettivo" con condizione per "sailpost" ----non mi convince
-calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
-    "lotto",
-    F.when(F.col("recapitista") == "RTI Sailpost-Snem", None).otherwise(F.col("lotto"))
-)
 
 ######################################### Gestione casistiche null
 calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
@@ -665,12 +662,12 @@ calcolo_penale = report_sla_modificato.withColumn(
                         F.col("ritardo_recapito") >= 60,
                         F.round((F.col("costo_recapitista") / 100) * 2, 2)
                     ).otherwise(0) #quando rientro in questa casistica? 
-            )
+            ).otherwise(0)
        , 2 )
     )
     
 ######################################### Corrispettivo penale pesato per l'integrazione con la penale di rendicontazione 
-calcolo_penale = report_sla_modificato.withColumn(
+calcolo_penale = calcolo_penale.withColumn(
     "corrispettivo_penale_pesato",
     # Tutto quello che ha la colonna corrispettivo_penale_proporzionale valorizzato --> moltiplicalo * 0.5
     F.round(
@@ -721,10 +718,10 @@ calcolo_riepilogo = report_penali.groupBy(
         F.year(F.to_date(F.substring(F.date_add(F.col("affido_recapitista_con016_data"), 1), 1, 10), 'yyyy-MM-dd')) #integrazione - aggiunto il +1 sull'anno del trimestre
     ).alias("Anno")
 ).agg(
-    F.sum(F.when((F.col("corrispettivo_penale_recapito") > 0), 1).otherwise(0)).alias("Recapito_con_violazione_SLA"), #fix: quando trovo il corrispettivo_penale_recapito > 0 allora ho una violazione
+    F.sum(F.when((F.col("corrispettivo_penale_pesato") > 0), 1).otherwise(0)).alias("Recapito_con_violazione_SLA"), #fix: quando trovo il corrispettivo_penale_recapito > 0 allora ho una violazione
     F.count("*").alias("Recapiti_Totali"),
     F.round(
-        F.sum(F.col("corrispettivo_penale_recapito"))
+        F.sum(F.col("corrispettivo_penale_pesato")) # fix: qui sommo direttamente il corrispettivo pesato
         , 2
     ).alias("Penale_Recapito")
 )

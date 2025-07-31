@@ -70,7 +70,7 @@ LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
     WHERE fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
     AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 3 
     AND YEAR(fine_recapito_data_rendicontazione) = 2024
-    AND recapitista_unif IN ('RTI Sailpost-Snem', 'POST & SERVICE')
+    AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('RTI Sailpost-Snem', 'POST & SERVICE')
     AND  requestid NOT IN (
           SELECT requestid_computed
           FROM send.silver_postalizzazione_denormalized
@@ -432,13 +432,13 @@ df1 = df1.withColumn(
                 (datediff_workdays_udf(F.col("certificazione_recapito_data"),F.col("fine_recapito_data_rendicontazione")) - (31*24)).cast("int")
             )
         ).when(
-            (F.col("prodotto") == 890) & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
+            (F.col("prodotto") == '890') & (F.col("lotto").isin(1, 3, 4, 6, 8, 12, 13, 14, 15, 17, 18, 19, 20)),
             F.when(
                 F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 6)"),
                 ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 6)"))) / 3600).cast("int")
             )
         ).when(
-            (F.col("prodotto") == 890) & (F.col("lotto").isin(2, 5, 7, 9, 10, 11, 16, 99)),
+            (F.col("prodotto") == '890') & (F.col("lotto").isin(2, 5, 7, 9, 10, 11, 16, 99)),
             F.when(
                 F.to_date(F.col("fine_recapito_data_rendicontazione")) >= F.expr("date_add(to_date(certificazione_recapito_data), 8)"),
                 ((F.unix_timestamp("fine_recapito_data_rendicontazione") - F.unix_timestamp(F.expr("date_add(to_date(certificazione_recapito_data), 8)"))) / 3600).cast("int")

@@ -70,7 +70,7 @@ LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
     WHERE fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
     AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 4 
     AND YEAR(fine_recapito_data_rendicontazione) = 2024
-    AND recapitista_unif IN ('RTI Fulmine - Sol. Camp.', 'RTI Fulmine - Forgilu') 
+    AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('RTI Fulmine - Sol. Camp.', 'RTI Fulmine - Forgilu') 
     AND  requestid NOT IN (
           SELECT requestid_computed
           FROM send.silver_postalizzazione_denormalized

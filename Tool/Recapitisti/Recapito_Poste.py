@@ -21,6 +21,7 @@ df_filtrato = spark.sql("""
     g.iun,
     g.requestid,
     g.requesttimestamp,
+    g.senderpaid,
     g.prodotto,
     g.geokey,
     c.area,
@@ -34,6 +35,7 @@ df_filtrato = spark.sql("""
  END AS recapitista,
     COALESCE(i.lotto_corretto, g.lotto) AS lotto,
     g.codice_oggetto,
+    g.costo_recapitista,
     affido_consolidatore_data,
     stampa_imbustamento_con080_data,
     affido_recapitista_con016_data,
@@ -73,7 +75,7 @@ LEFT JOIN send_dev.temp_incident i ON (g.requestid = i.requestid)
 LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
 WHERE fine_recapito_data_rendicontazione IS NOT NULL
   AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013', 'RECRSI005', 'RECRI005')                               
-  AND recapitista_unif IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
+  AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
   AND (
       -- Calcolare il trimestre da accettazione_recapitista_con018_data se non è NULL
       (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 1)

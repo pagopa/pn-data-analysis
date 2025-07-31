@@ -21,6 +21,7 @@ df_filtrato = spark.sql("""
     g.requestid,
     g.requesttimestamp,
     g.prodotto,
+    g.senderpaid,
     g.geokey,
     c.area,
     c.provincia,
@@ -33,6 +34,7 @@ df_filtrato = spark.sql("""
  END AS recapitista,
     COALESCE(i.lotto_corretto, g.lotto) AS lotto,
     g.codice_oggetto,
+    g.costo_recapitista,
     affido_consolidatore_data,
     stampa_imbustamento_con080_data,
     affido_recapitista_con016_data,
@@ -72,7 +74,7 @@ LEFT JOIN send_dev.temp_incident i ON (g.requestid = i.requestid)
 LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
 WHERE fine_recapito_data_rendicontazione IS NOT NULL 
   AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
-  AND recapitista_unif IN ('RTI Sailpost-Snem')
+  AND  COALESCE(i.recapitista_corretto, g.recapitista) IN ('RTI Sailpost-Snem')
   --- Impostare il numero del trimestre
   AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 2 
   --- Impostare l'anno
@@ -91,12 +93,15 @@ df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 
 record_count_filtrato_df = spark.sql("""
 SELECT 
-    recapitista,
+    lotto, 
+    prodotto, 
     COUNT(*) AS total_records
 FROM 
     gold_postalizzazione
-WHERE tentativo_recapito_data IS NOT NULL AND (accettazione_recapitista_CON018_data IS NOT NULL OR affido_recapitista_CON016_data IS NOT NULL)
-GROUP BY recapitista
+WHERE tentativo_recapito_data IS NOT NULL AND (accettazione_recapitista_con018_data IS NOT NULL OR affido_recapitista_con016_data IS NOT NULL)
+GROUP BY 
+    lotto, 
+    prodotto;
 """)
 
 ######################################### Creazione del DataFrame con le festività
@@ -569,7 +574,7 @@ ranking_data = calcolo_tempo_recapito.filter(
 
 ######################################### Ranking
 
-window_spec = Window.partitionBy("recapitista").orderBy(
+window_spec = Window.partitionBy("lotto", "prodotto").orderBy(
     F.col("ritardo_recapito").asc(),
     F.col("fine_recapito_data_rendicontazione").asc(),
     F.col("requestid").asc()
@@ -587,7 +592,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.join(
 
 calcolo_tempo_recapito = calcolo_tempo_recapito.join(
     record_count_filtrato_df,
-    on="recapitista",
+    on=["lotto", "prodotto"],
     how="left"
 )
 
@@ -637,12 +642,12 @@ calcolo_penale = report_sla_modificato.withColumn(
                         F.col("ritardo_recapito") >= 60,
                         F.round((F.col("costo_recapitista") / 100) * 2, 2)
                     ).otherwise(0) #quando rientro in questa casistica? 
-            )
+            ).otherwise(0)
        , 2 )
     )
     
 ######################################### Corrispettivo penale pesato per l'integrazione con la penale di rendicontazione 
-calcolo_penale = report_sla_modificato.withColumn(
+calcolo_penale = calcolo_penale.withColumn(
     "corrispettivo_penale_pesato",
     # Tutto quello che ha la colonna corrispettivo_penale_proporzionale valorizzato --> moltiplicalo * 0.5
     F.round(

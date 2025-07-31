@@ -80,7 +80,7 @@ df1 = spark.sql("""
                 LEFT JOIN send_dev.temp_incident i ON (g.requestid = i.requestid)
                 LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
                     WHERE fine_recapito_data_rendicontazione IS NOT NULL 
-                    AND recapitista_unif IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
+                    AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
                     AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013', 'RECRI005', 'RECRSI005')
                     AND  ( (demat_23l_ar_data_rendicontazione IS NOT NULL AND demat_plico_data_rendicontazione IS NOT NULL )
                             OR (demat_23l_ar_data_rendicontazione IS NULL AND demat_plico_data_rendicontazione IS NOT NULL)
@@ -868,7 +868,7 @@ PenaleRendicontazioneOther = (
                     lit(0)
                 )
             ).when(
-                (col("prodotto") == "RS") & (col("lotto") == '99'),
+                (col("prodotto") == "890") & (col("lotto") == '99'),
                 F.greatest(
                     F.round(F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.19 * 0.001, 
                         0),  #fix round
