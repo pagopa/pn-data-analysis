@@ -1,0 +1,20 @@
+{
+  "notification": {
+    "query": "SELECT COUNT(*) FROM pn_notifications WHERE p_year = '{YEAR}' AND p_month = '{MONTH}' AND p_day = '{DAY}' AND eventname = 'INSERT'"
+  },
+  "timeline": {
+    "query": "SELECT COUNT(*) FROM pn_timelines WHERE p_year = '{YEAR}' AND p_month = '{MONTH}' AND p_day = '{DAY}' AND eventname = 'INSERT' AND dynamodb.newimage.category.s <> 'VALIDATE_NORMALIZE_ADDRESSES_REQUEST'"
+  },
+  "mandate": {
+    "query": "SELECT COUNT(*) FROM pn_mandate WHERE p_year = '{YEAR}' AND p_month = '{MONTH}' AND p_day = '{DAY}' AND eventname IN ('INSERT', 'MODIFY') AND dynamodb.newimage.pk.s <> 'DELEGHETRIGGERHELPER'"
+  },
+  "user_attributes": {
+    "query": "SELECT COUNT(*) FROM pn_userattributes WHERE p_year = '{YEAR}' AND p_month = '{MONTH}' AND p_day = '{DAY}' AND ((dynamodb.newimage.pk.s LIKE 'AB#%' AND (dynamodb.newimage.sk.s LIKE 'LEGAL#%' OR dynamodb.newimage.sk.s LIKE 'COURTESY#%')) OR (dynamodb.newimage.pk.s LIKE 'CO#%' AND (dynamodb.newimage.sk.s LIKE 'TOS#%' OR dynamodb.newimage.sk.s LIKE 'DATAPRIVACY#%')))"
+  },
+  "radd": {
+    "query": "SELECT COUNT(*) FROM pn_radd_registry_v2 WHERE p_year = '{YEAR}' AND p_month = '{MONTH}' AND p_day = '{DAY}'"
+  },
+  "flusso_asseverazione": {
+    "query": "SELECT COUNT(*) FROM pn_asseveration WHERE p_year = '{YEAR}' AND p_month = '{MONTH}' AND p_day = '{DAY}'"
+  }
+}
