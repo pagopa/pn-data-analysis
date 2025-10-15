@@ -130,7 +130,7 @@ df_start = spark.sql("""
             SELECT iun 
             FROM send.silver_incident_iun
         )
-        AND gna.actual_status <> 'CANCELLED' AND gpa.ultimo_evento_stato NOT IN ('P008','P010')
+        AND gna.actual_status <> 'CANCELLED' AND gpa.ultimo_evento_stato NOT IN ('P008','P010','P011')
                      
             AND gpa.requestID NOT IN (
                                         SELECT requestid_computed
@@ -159,15 +159,8 @@ df_start = df_start.withColumn("Priority",
                                  .when(F.col("Cluster") == "Accettazione Recapitista", 1))
 								 
 								 
-windowSpec = Window.partitionBy("requestID").orderBy("Priority")
-
-df_start_with_rank = df_start.withColumn("rank", F.row_number().over(windowSpec))
-
-
-df_filtered = df_start_with_rank.filter(F.col("rank") == 1).drop("rank")
-
-# Aggiunta della colonna per calcolare la differenza tra gg lavorativi start date - end date
-df_filtered = df_filtered.withColumn(
+# Calcolo della differenza tra gg lavorativi start date - end date
+df_computed = df_start.withColumn(
     "differenza_gg_lavorativi",
     F.when(
         F.col("Cluster") == "Stampa Imbustamento",
@@ -184,8 +177,8 @@ df_filtered = df_filtered.withColumn(
     )
 )
 
-# Aggiunta della colonna per il calcolo dei giorni effettivi fuori SLA
-df_filtered = df_filtered.withColumn(
+# Calcolo dei giorni effettivi fuori SLA
+df_computed = df_computed.withColumn(
     "gg_fuori_sla",
     F.when(
         F.col("Cluster") == "Stampa Imbustamento",
@@ -201,6 +194,8 @@ df_filtered = df_filtered.withColumn(
         datediff_workdays_udf(F.col("affido_recapitista_con016_data"), F.current_timestamp()) - 1 
     )
 )
+
+df_filtered = df_computed.filter(F.col("gg_fuori_sla") > 0)
 
 ########################################################Fine Query
 
