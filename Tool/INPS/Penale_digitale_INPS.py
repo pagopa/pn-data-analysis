@@ -1,0 +1,328 @@
+import configparser
+import logging
+import math
+import uuid
+
+from pyspark.sql.functions import lit, to_date, month, years, col
+from pyspark.sql import SparkSession, DataFrameWriter
+from pyspark.sql.dataframe import DataFrame
+from pyspark.sql.functions import udf
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from datetime import datetime, timedelta
+
+######################################### Configuration and initialization
+
+spark = SparkSession.builder.getOrCreate()
+
+logging.info("=== Avvio job Penale Digitale INPS - BASE + COUNT ===")
+
+# -----------------------------
+# Query base (INPUT)
+# -----------------------------
+base_query = """
+        WITH fatturazione AS (
+            SELECT
+                iun,
+                category,
+                CAST(notificationSentAt AS TIMESTAMP) AS data_deposito,
+                CAST(invoincingTimestamp AS TIMESTAMP) AS data_fatturazione
+            FROM send.silver_invoicing_timeline
+            WHERE CAST(invoincingTimestamp AS TIMESTAMP)
+                BETWEEN CAST('2025-01-01 00:00:00' AS TIMESTAMP)
+                    AND CAST('2025-12-12 23:59:59' AS TIMESTAMP)
+            AND paid = '53b40136-65f2-424b-acfb-7fae17e35c60'
+            AND category IN (
+                'REFINEMENT',
+                'NOTIFICATION_VIEWED',
+                'ANALOG_WORKFLOW_RECIPIENT_DECEASED'
+            )
+        ),
+        notif AS (
+            SELECT
+                f.iun,
+                f.category,
+                f.data_deposito,
+                f.data_fatturazione,
+                n.type_notif
+            FROM fatturazione f
+            INNER JOIN send.gold_notification_analytics n
+                ON f.iun = n.iun
+            WHERE n.type_notif = 'DIGITAL'
+        ),
+        timeline AS (
+            SELECT
+                c.iun,
+                MAX(
+                    CASE
+                        WHEN c.category = 'DIGITAL_FAILURE_WORKFLOW'
+                        THEN CAST(c.`timestamp` AS TIMESTAMP)
+                    END
+                ) AS digital_failure_workflow_tms,
+                MAX(
+                    CASE
+                        WHEN c.category = 'DIGITAL_SUCCESS_WORKFLOW'
+                        THEN CAST(c.`timestamp` AS TIMESTAMP)
+                    END
+                ) AS digital_success_workflow_tms
+            FROM send.silver_timeline c
+            WHERE c.category IN (
+                'DIGITAL_FAILURE_WORKFLOW',
+                'DIGITAL_SUCCESS_WORKFLOW'
+            )
+            GROUP BY c.iun
+        )
+        SELECT
+            n.*,
+            t.digital_failure_workflow_tms,
+            t.digital_success_workflow_tms,
+            LEAST(
+                COALESCE(
+                    t.digital_failure_workflow_tms,
+                    t.digital_success_workflow_tms
+                ),
+                n.data_fatturazione
+            ) AS end_date
+        FROM notif n
+        LEFT JOIN timeline t
+            ON n.iun = t.iun
+        WHERE t.iun IS NOT NULL
+"""
+
+# Esecuzione base + persist
+logging.info("Esecuzione query base")
+df_base = spark.sql(base_query)
+
+logging.info("Persist df1 (MEMORY_AND_DISK)")
+df1 = df_base.persist()
+
+# COUNT separato
+logging.info("Calcolo COUNT globale via Spark SQL")
+
+count_df = spark.sql(f"""
+        SELECT COUNT(*) AS total_records
+        FROM ({base_query}) q
+    """)
+
+logging.info("Broadcast COUNT globale")
+count_df = F.broadcast(count_df)
+
+#prova cross join per portare il count nel dataset
+logging.info("Prova -- Cross join df1 con total_records")
+
+df1 = df1.crossJoin(count_df)
+
+# Dataframe delle festività -- N.B. da aggiungere presto quelle del 2026
+festivita = [
+    ('2023-01-01', 'Capodanno'),
+    ('2023-01-06', 'Epifania'),
+    ('2023-04-09', 'Pasqua'),
+    ('2023-04-10', 'Lunedì dell\'Angelo'),
+    ('2023-04-25', 'Festa della Liberazione'),
+    ('2023-05-01', 'Festa dei Lavoratori'),
+    ('2023-06-02', 'Festa della Repubblica'),
+    ('2023-08-15', 'Ferragosto'),
+    ('2023-11-01', 'Tutti i Santi'),
+    ('2023-12-08', 'Immacolata Concezione'),
+    ('2023-12-25', 'Natale'),
+    ('2023-12-26', 'Santo Stefano'),
+
+    ('2024-01-01', 'Capodanno'),
+    ('2024-01-06', 'Epifania'), 
+    ('2024-04-01', 'Lunedì dell\'Angelo'),
+    ('2024-03-31', 'Pasqua'),
+    ('2024-04-25', 'Festa della Liberazione'),
+    ('2024-05-01', 'Festa dei Lavoratori'),
+    ('2024-06-02', 'Festa della Repubblica'),
+    ('2024-08-15', 'Ferragosto'),
+    ('2024-11-01', 'Tutti i Santi'),
+    ('2024-12-25', 'Natale'),
+    ('2024-12-26', 'Santo Stefano'),
+
+    ('2025-01-01', 'Capodanno'),
+    ('2025-01-06', 'Epifania'),
+    ('2025-04-20', 'Pasqua'),
+    ('2025-04-21', 'Lunedì dell\'Angelo'),
+    ('2025-04-25', 'Festa della Liberazione'),
+    ('2025-05-01', 'Festa dei Lavoratori'),
+    ('2025-06-02', 'Festa della Repubblica'),
+    ('2025-08-15', 'Ferragosto'),
+    ('2025-11-01', 'Ognissanti'),
+    ('2025-12-08', 'Immacolata Concezione'),
+    ('2025-12-25', 'Natale'),
+    ('2025-12-26', 'Santo Stefano')
+]
+
+holiday_dates = {datetime.strptime(date, '%Y-%m-%d').date() for date, _ in festivita}
+
+festivita_df = spark.createDataFrame(festivita, ["data", "descrizione"])
+
+festivita_df = festivita_df.withColumn("data", to_date(festivita_df["data"], "yyyy-MM-dd"))
+
+festivita_df.createOrReplaceTempView("FestivitaView")
+
+#festivita_df.show(10)
+
+
+######################################### Funzione custom per il calcolo dei giorni lavorativi
+
+def datediff_workdays(start_date, end_date):
+    try:
+        if start_date is None or end_date is None:
+            return None
+
+        if end_date < start_date:
+            return 0
+
+        start_date_next_day = start_date.replace(hour=0, minute=0, second=0) + timedelta(days=1)
+
+        total_days = (end_date.date() - start_date_next_day.date()).days
+
+        days_list = [start_date_next_day + timedelta(days=i) for i in range(total_days + 1)]
+
+        working_days = [d for d in days_list if d.weekday() < 5 and d.date() not in holiday_dates]
+
+        total_working_days = len(working_days)
+
+        return math.floor(total_working_days)
+
+    except Exception as e:
+        return None
+
+datediff_workdays_udf = udf(datediff_workdays, IntegerType())
+
+########################################## Inizio prima query di dettaglio
+
+festivita = spark.table("FestivitaView")
+holidays = festivita.select(F.collect_list("data").alias("holidays")).collect()[0]["holidays"]
+
+
+################################## calcolo gg lavorativi
+logging.info("Calcolo t_completamento_digitale (UDF)")
+
+df1 = df1.withColumn(
+    "t_completamento_digitale",
+    datediff_workdays_udf(F.col("data_deposito"), F.col("end_date"))
+)
+
+################################## calcolo ritardo SLA
+logging.info("Calcolo Ritardo SLA")
+
+df1 = df1.withColumn(
+    "diff_gg_SLA",
+    F.col("t_completamento_digitale") - 23
+)
+
+################################# Se ho un ritardo negativo allora forzo a 0
+
+df1 = df1.withColumn(
+    "Ritardo SLA",
+    F.when( F.col("diff_gg_SLA") < 0, 0).otherwise(F.col("diff_gg_SLA"))
+)
+
+################################## calcolo ranking
+"""
+logging.info("Calcolo ranking globale (window function)")
+
+df1 = df1.withColumn(
+    "ranking",
+    F.row_number().over(
+        Window.orderBy(
+            F.col("Ritardo SLA").asc(),
+            F.col("end_date").asc()
+        )
+    )
+)
+
+logging.info("Ranking globale calcolato")
+"""
+################################# percentuale oggetti ordinata
+"""
+logging.info("Calcolo percentuale_oggetti_ordinata")
+
+df1 = df1.withColumn(
+    "percentuale_oggetti_ordinata",
+    F.col("ranking") / F.col("total_records")
+)
+"""
+################################## corrispettivo_penale_digitale
+
+"""
+logging.info("Calcolo corrispettivo_penale_digitale")
+
+df1 = df1.withColumn(
+    "corrispettivo_penale_digitale",
+    F.round(
+        F.when( #F.col("percentuale_oggetti_ordinata") < 0.99 & 
+               F.col("Ritardo SLA") > 0, #FIX: inserisco il ritardo SLA > 0 
+               0.2).otherwise(0),
+        2
+    )
+)"""
+    
+################################## Creazione della vista temporanea 
+df1.createOrReplaceTempView("digitaliDettaglio")
+
+logging.info("Scrittura tabella dettaglio")
+
+################################## Estrazione dettaglio - scrittura in tabella --- N.B. non va estratta ma serve solamente per le verifiche
+spark.sql("""SELECT * FROM digitaliDettaglio""").writeTo("send_dev.inps_penali_digitali_dettaglio")\
+                                        .using("iceberg")\
+                                        .tableProperty("format-version","2")\
+                                        .tableProperty("engine.hive.enabled","true")\
+                                        .createOrReplace()
+
+################################## Aggregato
+logging.info("Calcolo aggregato")
+
+df_aggregato = df1.agg(
+    F.count("*").alias("Notifiche_Totali"),
+    F.sum(
+        F.when(F.col("Ritardo SLA") == 0, 1).otherwise(0)
+    ).alias("Notifiche_In_SLA"),
+    F.sum(
+        F.when(F.col("Ritardo SLA") > 0, 1).otherwise(0)
+    ).alias("Notifiche_Fuori_SLA"),
+    # Percentuale notifiche fuori SLA al netto della franchigia 
+    F.greatest(
+        (F.sum(F.when(F.col("Ritardo SLA") > 0, 1).otherwise(0)) / F.count("*")) - F.lit(0.01),
+        F.lit(0)
+    ).alias("Percentuale_Notifiche_In_Penale_Esclusa_Franchigia"),
+    # Penale totale
+    (
+        F.greatest(
+            (F.sum(F.when(F.col("Ritardo SLA") > 0, 1).otherwise(0)) / F.count("*")) - F.lit(0.01),
+            F.lit(0)
+        )
+        * F.count("*")
+        * F.lit(0.2)
+    ).alias("Penale_Digitale")
+)
+    
+
+"""
+df_aggregato = df1.agg(
+    F.count("*").alias("Notifiche_Totali"),
+    F.sum(F.when((F.col("corrispettivo_penale_digitale") == 0), 1).otherwise(0)).alias("Calcolo_In_SLA"), # Calcolo N° di oggetti in SLA
+    F.sum(F.when((F.col("corrispettivo_penale_digitale") > 0), 1).otherwise(0)).alias("Calcolo_Fuori_SLA"), # Calcolo N° di oggetti fuori SLA
+    F.sum(F.when((F.col("percentuale_oggetti_ordinata") >= 0.99), 1).otherwise(0)).alias("Calcolo_Notifiche_Extra_Franchigia"), # Calcolo N° notifiche extra franchigia
+    F.round( F.sum(F.col("corrispettivo_penale_digitale")), 2 ).alias("Penale_Digitale") # Aggregato della penale digitale
+)"""
+
+################################## Creazione della vista temporanea
+logging.info("Scrittura aggregato")
+
+df_aggregato.createOrReplaceTempView("digitaliAggregato")
+
+################################## Estrazione aggregato - scrittura in tabella 
+spark.sql("""SELECT * FROM digitaliAggregato""").writeTo("send_dev.inps_penali_digitali_aggregato")\
+                                                 .using("iceberg")\
+                                                 .tableProperty("format-version","2")\
+                                                 .tableProperty("engine.hive.enabled","true")\
+                                                 .createOrReplace()
+
+logging.info("Job completato con successo")
+
+df1.unpersist()
+spark.stop()
