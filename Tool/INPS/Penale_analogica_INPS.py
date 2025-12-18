@@ -52,12 +52,8 @@ query = """
         ),
         gpa_dedup AS (
             SELECT DISTINCT SUBSTRING(requestid, 25, 50) AS req_id,
-                requestid,
                 lotto,
                 prodotto,
-                prezzo_ente,
-                costo_recapitista,
-                costo_consolidatore,
                 CASE
                         WHEN codice_oggetto LIKE 'R14%' THEN 'Fulmine'
                         WHEN codice_oggetto LIKE '777%' OR codice_oggetto LIKE 'PSTAQ777%' THEN 'POST & SERVICE'
@@ -70,7 +66,6 @@ query = """
         )
         SELECT
             n.iun,
-            g.requestid,
             n.recindex,
             n.category,
             n.type_notif,
@@ -81,9 +76,6 @@ query = """
             g.lotto,
             g.prodotto,
             g.recapitista_unif AS recapitista,
-            g.prezzo_ente,
-            g.costo_recapitista,
-            g.costo_consolidatore,
             concat(
                 cast(year(n.data_fatturazione) AS string),
                 '_Q',
@@ -296,85 +288,22 @@ spark.sql("""SELECT * FROM analogicheDettaglio""").writeTo("send_dev.inps_penali
 
 logging.info("Calcolo aggregato")
 
-
-df_aggregato = (
-    df1
-    .groupBy(
-        "quarter_fatturazione",
-        "recapitista"
-    )
-    .agg(
-        F.count("*").alias("Notifiche_Totali"),
-        F.sum( F.when(F.col("Ritardo SLA") == 0, 1).otherwise(0)).alias("Notifiche_In_SLA"),
-        F.sum( F.when(F.col("Ritardo SLA") > 0, 1).otherwise(0)).alias("Notifiche_Fuori_SLA"),
-        F.sum( F.when( (F.col("flag_penale_analogica") == 0) & (F.col("Ritardo SLA") > 0), 1 ).otherwise(0) ).alias("Notifiche_Fuori_SLA_in_Franchigia"),
-        F.sum( F.when(F.col("flag_penale_analogica") == 1, 1).otherwise(0) ).alias("Notifiche_Fuori_SLA_in_penale")
-    )
-    .orderBy("quarter_fatturazione")
-)
-
-#aggiunta delle colonn sulla percentuale
-df_aggregato = (
-    df_aggregato
-    .withColumn("percentuale_conformita", F.col("Notifiche_In_SLA") / F.col("Notifiche_Totali"))
-    .withColumn("percentuale_non_conformita_fuori_SLA_totali", F.col("Notifiche_Fuori_SLA") / F.col("Notifiche_Totali"))
-    .withColumn("percentuale_non_conformita_fuori_SLA_in_penale", F.col("Notifiche_Fuori_SLA_in_penale") / F.col("Notifiche_Totali"))
-    .orderBy("quarter_fatturazione")
-)
-
-#aggiungere riga "totale" --> campi quarter quarter_fatturazione e recapitista dovranno essere NULL, per le altre colonne conteggio tatale e percentuale totale
-df_totale = (
-    df_aggregato
-    .agg(
-        F.sum("Notifiche_Totali").alias("Notifiche_Totali"),
-        F.sum("Notifiche_In_SLA").alias("Notifiche_In_SLA"),
-        F.sum("Notifiche_Fuori_SLA").alias("Notifiche_Fuori_SLA"),
-        F.sum("Notifiche_Fuori_SLA_in_Franchigia").alias("Notifiche_Fuori_SLA_in_Franchigia"),
-        F.sum("Notifiche_Fuori_SLA_in_penale").alias("Notifiche_Fuori_SLA_in_penale")
-    )
-    # colonne di raggruppamento a NULL
-    .withColumn("quarter_fatturazione", F.lit(None))
-    .withColumn("recapitista", F.lit(None))
-)
-
-# Aggiunta delle percentuali totali -- con round a 5 cifre decimali
-df_totale = (
-    df_totale
-    .withColumn(
-        "percentuale_conformita",
-        F.round(
-            F.col("Notifiche_In_SLA") / F.col("Notifiche_Totali"),
-            5
-        )
-    )
-    .withColumn(
-        "percentuale_non_conformita_fuori_SLA_totali",
-        F.round(
-            F.col("Notifiche_Fuori_SLA") / F.col("Notifiche_Totali"),
-            5
-        )
-    )
-    .withColumn(
-        "percentuale_non_conformita_fuori_SLA_in_penale",
-        F.round(
-            F.col("Notifiche_Fuori_SLA_in_penale") / F.col("Notifiche_Totali"),
-            5
-        )
-    )
-)
-
-# riportata nel dataframe originale
-df_finale = (
-    df_aggregato
-    .unionByName(df_totale)
-    .orderBy("quarter_fatturazione")
-)
+df_aggregato = df1.groupBy( 
+    "quarter_fatturazione",
+    "recapitista",
+    "prodotto" #FIX
+).agg(
+    F.count("*").alias("Notifiche_Totali"),
+    F.sum( F.when(F.col("flag_penale_analogica") == 0, 1).otherwise(0)).alias("Notifiche_In_SLA"),    #FIX
+    F.sum(F.when(F.col("flag_penale_analogica") == 1, 1).otherwise(0)).alias("Notifiche_Fuori_SLA"),  #FIX
+    F.sum(F.when((F.col("flag_penale_analogica") == 0) & (F.col("Ritardo SLA") > 0), 1).otherwise(0)).alias("Notifiche_In_Penale_Esclusa_Franchigia") #FIX
+) #la penale sarà da calcolare sulla base di quello che ci dirà fatturazione
 
 ################################## Creazione della vista temporanea
 
 logging.info("Scrittura aggregato")
 
-df_finale.createOrReplaceTempView("analogicheAggregato")
+df_aggregato.createOrReplaceTempView("analogicheAggregato")
 
 ################################## Estrazione aggregato - scrittura in tabella 
 spark.sql("""SELECT * FROM analogicheAggregato""").writeTo("send_dev.inps_penali_analogiche_aggregato")\
