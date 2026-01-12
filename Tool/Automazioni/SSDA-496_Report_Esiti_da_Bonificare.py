@@ -40,18 +40,36 @@ def build_queries() -> dict:
 
     # Query base -- presa la versione CDE con Lateral View
     query_sql_base = """
-        WITH base AS (
+        WITH temp_demat AS (
+            SELECT
+                REGEXP_REPLACE(p.requestid, '^pn-cons-000~', '') AS requestid,
+                att.documenttype AS documenttype,
+                ROW_NUMBER() OVER (
+                PARTITION BY REGEXP_REPLACE(p.requestid, '^pn-cons-000~', '')
+                ORDER BY e.paperprogrstatus.clientrequesttimestamp DESC
+                ) AS rn_demat
+            FROM send.silver_postalizzazione p
+            LATERAL VIEW explode(p.eventslist) ev AS e
+            LATERAL VIEW explode(e.paperprogrstatus.attachments) atts AS att
+            WHERE att.documenttype IN ('23L', 'AR')
+            ),
+        ---- 1° CTE temp_silver_postalizzazione: prendo la silver_postalizzazione e applico il row number su tutti gli stati della certificazione e fine recapito
+            base AS (
                 SELECT
-                    regexp_replace(t.requestid, '^pn-cons-000~', '') AS requestid,
+                    REGEXP_REPLACE (t.requestid, '^pn-cons-000~', '') AS requestid,
                     e.paperprogrstatus.statuscode AS statuscode,
                     CASE
-                        WHEN length(e.paperprogrstatus.statusdatetime) = 17 THEN
-                            concat(substring(e.paperprogrstatus.statusdatetime, 1, 16), ':00Z')
+                        WHEN LENGTH (e.paperprogrstatus.statusdatetime) = 17 THEN CONCAT (
+                            SUBSTR (e.paperprogrstatus.statusdatetime, 1, 16),
+                            ':00Z'
+                        )
                         ELSE e.paperprogrstatus.statusdatetime
                     END AS statusdatetime,
                     CASE
-                        WHEN length(e.paperprogrstatus.clientrequesttimestamp) = 17 THEN
-                            concat(substring(e.paperprogrstatus.clientrequesttimestamp, 1, 16), ':00.000Z')
+                        WHEN LENGTH (e.paperprogrstatus.clientrequesttimestamp) = 17 THEN CONCAT (
+                            SUBSTR (e.paperprogrstatus.clientrequesttimestamp, 1, 16),
+                            ':00.000Z'
+                        )
                         ELSE e.paperprogrstatus.clientrequesttimestamp
                     END AS clientrequesttimestamp,
                     CASE
@@ -177,6 +195,7 @@ def build_queries() -> dict:
                     t.fine_recapito_stato AS fine_recapito_stato_silver,
                     t.fine_recapito_data AS fine_recapito_data_silver,
                     t.fine_recapito_rendicontazione AS fine_recapito_rendicontazione_silver,
+                    d.documenttype,
                     CASE
                         WHEN n.type_notif = 'MULTI' THEN 1
                         ELSE 0
@@ -285,9 +304,16 @@ def build_queries() -> dict:
                             CAST(s.tentativo_recapito_data AS DATE)
                         ) < 30 THEN 1
                         ELSE 0
-                    END AS controllo_tempistiche_compiuta_giacenza
+                    END AS controllo_tempistiche_compiuta_giacenza,
+                    CASE
+                        WHEN s.prodotto = '890' AND d.documenttype = '23L' THEN 0
+                        WHEN s.prodotto = 'AR'  AND d.documenttype = 'AR'  THEN 0
+                        WHEN d.documenttype IS NULL THEN 0
+                        ELSE 1
+                    END AS controllo_documentType
                 FROM
                     send.gold_postalizzazione_analytics s
+                    LEFT JOIN temp_demat d ON d.requestid = s.requestid AND d.rn_demat = 1
                     LEFT JOIN send.silver_notification sn ON (sn.iun = s.iun)
                     LEFT JOIN send.gold_notification_analytics n ON (s.iun = n.iun)
                     LEFT JOIN send.silver_timeline tl ON (s.iun = tl.iun AND tl.category = 'SCHEDULE_REFINEMENT')
@@ -405,6 +431,7 @@ def build_queries() -> dict:
                     t.certificazione_recapito_data,
                     t.certificazione_recapito_data_rendicontazione,
                     t.demat_23l_ar_stato,
+                    t.documenttype,
                     t.demat_23l_ar_data_rendicontazione,
                     t.demat_plico_stato,
                     t.demat_plico_data_rendicontazione,
@@ -445,11 +472,13 @@ def build_queries() -> dict:
                         OR controllo_date_business = 1
                         OR controllo_tripletta = 1
                         OR controllo_tempistiche_compiuta_giacenza = 1
-                        OR controllo_inesito_casi_giacenza = 1 THEN 1
+                        OR controllo_inesito_casi_giacenza = 1 
+				        OR controllo_documentType = 1 THEN 1
                         ELSE 0
                     END AS flag_errore_rendicontazione,
                     CONCAT_WS (
                         ', ',
+                        CASE WHEN controllo_documentType = 1 THEN 'errore documenttype' END,
                         CASE WHEN controllo_causale = 1 THEN 'errore rend. causale' END,
                         CASE WHEN controllo_date_business = 1 THEN 'errore rend. date business' END,
                         CASE WHEN controllo_tripletta = 1 THEN 'errore rend. tripletta' END,
@@ -466,6 +495,7 @@ def build_queries() -> dict:
                     t.controllo_tripletta,
                     t.controllo_tempistiche_compiuta_giacenza,
                     t.controllo_inesito_casi_giacenza,
+                    t.controllo_documentType,
                     t.assenza_inesito,
                     t.assenza_messa_in_giacenza,
                     t.assenza_pre_esito,
