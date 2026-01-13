@@ -31,7 +31,19 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
     logging.info("Esecuzione query...")
 
     query_sql = f"""
-        WITH
+        WITH temp_demat AS (
+            SELECT
+                REGEXP_REPLACE(p.requestid, '^pn-cons-000~', '') AS requestid,
+                att.documenttype AS documenttype,
+                ROW_NUMBER() OVER (
+                PARTITION BY REGEXP_REPLACE(p.requestid, '^pn-cons-000~', '')
+                ORDER BY e.paperprogrstatus.clientrequesttimestamp DESC
+                ) AS rn_demat
+            FROM send.silver_postalizzazione p
+            LATERAL VIEW explode(p.eventslist) ev AS e
+            LATERAL VIEW explode(e.paperprogrstatus.attachments) atts AS att
+            WHERE att.documenttype IN ('23L', 'AR')
+            ),
         ---- 1° CTE temp_silver_postalizzazione: prendo la silver_postalizzazione e applico il row number su tutti gli stati della certificazione e fine recapito
             base AS (
                 SELECT
@@ -174,6 +186,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     t.fine_recapito_stato AS fine_recapito_stato_silver,
                     t.fine_recapito_data AS fine_recapito_data_silver,
                     t.fine_recapito_rendicontazione AS fine_recapito_rendicontazione_silver,
+                    d.documenttype,
                     CASE WHEN w.requestid IS NOT NULL THEN 1 ELSE 0 END AS  flag_wi7_poste,
                     CASE
                         WHEN n.type_notif = 'MULTI' THEN 1
@@ -285,8 +298,15 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                             CAST(s.tentativo_recapito_data AS DATE)
                         ) < 30 THEN 1
                         ELSE 0
-                    END AS controllo_tempistiche_compiuta_giacenza
+                    END AS controllo_tempistiche_compiuta_giacenza,
+                    CASE
+                        WHEN s.prodotto = '890' AND d.documenttype = '23L' THEN 0
+                        WHEN s.prodotto = 'AR'  AND d.documenttype = 'AR'  THEN 0
+                        WHEN d.documenttype IS NULL THEN 0
+                        ELSE 1
+                    END AS controllo_documentType 
                 FROM send.gold_postalizzazione_analytics s
+                    LEFT JOIN temp_demat d ON d.requestid = s.requestid AND d.rn_demat = 1
                     LEFT JOIN send_dev.wi7_poste_da_escludere w ON s.requestid = w.requestid
                     LEFT JOIN send.silver_notification sn ON (sn.iun = s.iun)
                     LEFT JOIN send.gold_notification_analytics n ON (s.iun = n.iun)
@@ -393,6 +413,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     t.certificazione_recapito_data,
                     t.certificazione_recapito_data_rendicontazione,
                     t.demat_23l_ar_stato,
+                    t.documenttype,
                     t.demat_23l_ar_data_rendicontazione,
                     t.demat_plico_stato,
                     t.demat_plico_data_rendicontazione,
@@ -433,7 +454,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 --- FLAG ERRORE RENDICONTAZIONE
                 CASE
                     WHEN controllo_causale = 1 OR controllo_date_business = 1 OR controllo_tripletta = 1
-                    OR controllo_tempistiche_compiuta_giacenza = 1 OR controllo_inesito_casi_giacenza = 1
+                    OR controllo_tempistiche_compiuta_giacenza = 1 OR controllo_inesito_casi_giacenza = 1  OR controllo_documentType = 1
                     THEN 1
                     ELSE 0
                 END AS flag_errore_rendicontazione,
@@ -450,19 +471,21 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     CASE WHEN assenza_pre_esito = 1 AND fine_recapito_stato IS NOT NULL AND flag_wi7_poste = 0 THEN 'assenza pre-esito' END,
                     CASE WHEN assenza_dematerializzazione_23l_ar_plico = 1 AND fine_recapito_stato IS NOT NULL AND flag_wi7_poste = 0 THEN 'assenza demat 23l_ar / plico' END,
                     CASE WHEN assenza_demat_arcad = 1 AND fine_recapito_stato IS NOT NULL AND flag_wi7_poste = 0 THEN 'assenza demat ARCAD' END,
-                    CASE WHEN assenza_RECAG012 = 1 AND fine_recapito_stato IS NOT NULL AND flag_wi7_poste = 0 THEN 'assenza RECAG012' END
+                    CASE WHEN assenza_RECAG012 = 1 AND fine_recapito_stato IS NOT NULL AND flag_wi7_poste = 0 THEN 'assenza RECAG012' END,
+                    CASE WHEN controllo_documentType = 1  and fine_recapito_stato IS NOT NULL and flag_wi7_poste = 0 THEN 'errore documentType' END
                 ) AS dettaglio_errore_rendicontazione,
                 CASE
                     WHEN flag_wi7_poste = 1 THEN 'Oggetto rientrante in tavoli Duplicati / Non Rendicontabili'
-                    WHEN (flag_wi7_report_postalizzazioni_incomplete = 1  OR flag_wi7_consolidatore = 1) AND flag_wi7_poste = 0  THEN 'Oggetto fuori sla'
+                    WHEN (flag_wi7_report_postalizzazioni_incomplete = 1 OR flag_wi7_consolidatore = 1) AND flag_wi7_poste = 0  THEN 'Oggetto fuori sla'
                     WHEN flag_destinatario_deceduto = 1 THEN  'Oggetto restituito al mittente (esito destinatario deceduto)'
                     WHEN (
                         controllo_causale = 1 OR controllo_date_business = 1 OR controllo_tripletta = 1  OR controllo_tempistiche_compiuta_giacenza = 1 
-                        OR controllo_inesito_casi_giacenza = 1 OR flag_esiti_mancanti = 1
+                        OR controllo_inesito_casi_giacenza = 1 OR flag_esiti_mancanti = 1 OR controllo_documentType = 1 
                     ) AND fine_recapito_stato IS NOT NULL THEN 'Errore rendicontazione/assenza eventi intermedi'
                     WHEN (controllo_causale = 0  AND controllo_date_business = 0 AND controllo_tripletta = 0 AND controllo_tempistiche_compiuta_giacenza = 0
                         AND controllo_inesito_casi_giacenza = 0 AND assenza_inesito = 0 AND assenza_RECAG012 = 0  AND assenza_pre_esito = 0
                         AND assenza_dematerializzazione_23l_ar_plico = 0  AND assenza_messa_in_giacenza = 0 AND assenza_demat_arcad = 0 AND flag_destinatario_deceduto = 0
+                        AND controllo_documentType = 0
                         ) THEN 'Oggetto con rendicontazione corretta in analisi Team Prodotto'
                     ELSE "Oggetto in corso di postalizzazione"
                 END AS cluster_mancato_perfezionamento,
@@ -471,6 +494,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 t.controllo_tripletta,
                 t.controllo_tempistiche_compiuta_giacenza,
                 t.controllo_inesito_casi_giacenza,
+		        t.controllo_documentType,
                 t.assenza_inesito,
                 t.assenza_messa_in_giacenza,
                 t.assenza_pre_esito,
@@ -490,6 +514,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     requesttimestamp,
                     prodotto,
                     geokey,
+			        documenttype,
                     recapitista_unif,
                     lotto,
                     codice_oggetto,
@@ -497,7 +522,8 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     affido_accettazione_rec_data,
                     tms_date_payment,
                     cluster_mancato_perfezionamento,
-                    dettaglio_errore_rendicontazione
+                    dettaglio_errore_rendicontazione,
+			        controllo_documentType
             FROM finale
             WHERE
                 flag_ultima_postalizzazione = 1
