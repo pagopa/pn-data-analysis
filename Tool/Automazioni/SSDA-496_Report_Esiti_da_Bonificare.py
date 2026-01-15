@@ -512,7 +512,8 @@ def build_queries() -> dict:
                     flag_ultima_postalizzazione = 1
                     AND tms_cancelled IS NULL
                     AND flag_schedule_refinement = 0
-                    AND certificazione_recapito_stato NOT IN ('RECRS006','RECRS013','RECRN006','RECRN013','RECAG004','RECAG013')
+                    AND (certificazione_recapito_stato NOT IN ('RECRS006','RECRS013','RECRN006','RECRN013','RECAG004','RECAG013') 
+                         OR certificazione_recapito_stato IS NULL)
                     AND (
                         tentativo_recapito_stato NOT IN ('PN998', 'PN999')
                         OR certificazione_recapito_stato NOT IN ('PN998', 'PN999')
