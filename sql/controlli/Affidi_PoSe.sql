@@ -1,0 +1,75 @@
+
+-------------------------- Affidi di post&service dal 1/12/2024 ad oggi 
+
+SELECT 
+    senderpaid,
+    iun,
+    requestID,
+    requesttimestamp AS requestDateTime,
+    prodotto,
+    geokey,
+    recapitista_unificato,
+    lotto,
+    --codice_oggetto AS codiceOggetto, --Per Fulmine
+    CONCAT ("'", codice_oggetto) AS codiceOggetto, --Per altri Recapitisti
+    affido_consolidatore_data,
+    stampa_imbustamento_CON080_data,
+    affido_recapitista_CON016_data,
+    accettazione_recapitista_CON018_data,
+    affido_conservato_CON020_data,
+    materialita_pronta_CON09A_data,
+    scarto_consolidatore_stato,
+    scarto_consolidatore_data,
+    tentativo_recapito_stato,
+    tentativo_recapito_data,
+    tentativo_recapito_data_rendicontazione,
+    messaingiacenza_recapito_stato,
+    messaingiacenza_recapito_data,
+    messaingiacenza_recapito_data_rendicontazione,
+    certificazione_recapito_stato,
+    certificazione_recapito_dettagli,
+    certificazione_recapito_data,
+    certificazione_recapito_data_rendicontazione,
+    fine_recapito_stato,
+    fine_recapito_data,
+    fine_recapito_data_rendicontazione,
+    accettazione_23L_RECAG012_data,
+    accettazione_23L_RECAG012_data_rendicontazione,
+    rend_23L_stato,
+    rend_23L_data,
+    rend_23L_data_rendicontazione,
+    causa_forza_maggiore_dettagli,
+    causa_forza_maggiore_data,
+    causa_forza_maggiore_data_rendicontazione,
+    perfezionamento_data,
+    perfezionamento_tipo,
+    perfezionamento_notificationdate,
+    perfezionamento_stato,
+    perfezionamento_stato_dettagli
+    flag_wi7_report_postalizzazioni_incomplete, 
+    wi7_cluster  
+FROM send.gold_postalizzazione_analytics 
+WHERE scarto_consolidatore_stato IS NULL AND recapitista_unificato = 'POST & SERVICE' AND accettazione_recapitista_con018_data >= '2024-12-01' 
+-- considerare anche l'accettazione recapitista NULL 
+
+
+
+
+-------------------------- Query Verifica Affidato Post&Service [AGGREGATO]
+SELECT 
+    EXTRACT(YEAR FROM r.accettazione_recapitista_con018_data) AS anno,
+    EXTRACT(MONTH FROM r.accettazione_recapitista_con018_data) AS mese,
+    c.regione,
+    r.lotto,
+    COUNT(*) AS count_spedizioni
+FROM send.gold_postalizzazione_analytics r
+JOIN send_dev.cap_area_provincia_regione c
+    ON r.geokey = c.cap
+WHERE 
+    EXTRACT(YEAR FROM r.accettazione_recapitista_con018_data) = 2024 AND
+    EXTRACT(MONTH FROM r.accettazione_recapitista_con018_data) IN (10, 11, 12) AND
+    r.recapitista_unificato = 'POST & SERVICE' AND
+    r.scarto_consolidatore_stato IS NULL AND
+    r.accettazione_recapitista_data IS NOT NULL
+GROUP BY  anno, mese, c.regione, lotto
+ORDER BY  anno, mese, c.regione, lotto;
