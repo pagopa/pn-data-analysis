@@ -52,7 +52,7 @@ GROUP BY car.regione, gpa.prodotto,
 ORDER by gpa.prodotto, car.regione;
 
 
---------------------------------------- QUERY 2 - Andamento Regionale ente INPS e prodotto AR
+--------------------------------------- QUERY 2 - Andamento Regionale ente e prodotto AR
 
 WITH dati_gold_corretti AS (
     SELECT 
@@ -108,7 +108,7 @@ ORDER by car.regione;
 
 
 
---------------------------- QUERY 3 - Andamento Fornitori ente INPS e prodotto AR
+--------------------------- QUERY 3 - Andamento Fornitori ente e prodotto AR
 
 WITH dati_gold_corretti AS (
     SELECT 
