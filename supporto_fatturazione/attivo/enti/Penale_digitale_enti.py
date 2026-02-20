@@ -16,90 +16,102 @@ from datetime import datetime, timedelta
 
 spark = SparkSession.builder.getOrCreate()
 
-query = """
+logging.info("=== Avvio job Penale Digitale INPS - BASE + COUNT ===")
+
+# -----------------------------
+# Query base (INPUT)
+# -----------------------------
+base_query = """
         WITH fatturazione AS (
-            SELECT DISTINCT
+            SELECT
                 iun,
                 category,
-                get_json_object(details, '$.recIndex') AS recindex,
-                CAST(notificationSentAt AS TIMESTAMP)  AS data_deposito,
+                CAST(notificationSentAt AS TIMESTAMP) AS data_deposito,
                 CAST(invoincingTimestamp AS TIMESTAMP) AS data_fatturazione
             FROM send.silver_invoicing_timeline
-            WHERE CAST(invoincingTimestamp AS TIMESTAMP) BETWEEN CAST('2025-01-01 00:00:00' AS TIMESTAMP)
-                    AND CAST('2025-12-12 23:59:59' AS TIMESTAMP)
+            WHERE CAST(invoincingTimestamp AS TIMESTAMP)
+                BETWEEN CAST('2025-01-01 00:00:00' AS TIMESTAMP)
+                    AND CAST('2025-12-31 23:59:59' AS TIMESTAMP)
             AND paid = '53b40136-65f2-424b-acfb-7fae17e35c60'
-            AND category IN ('REFINEMENT', 'NOTIFICATION_VIEWED', 'ANALOG_WORKFLOW_RECIPIENT_DECEASED')
-        ),notif AS (
-            SELECT DISTINCT
+            AND category IN (
+                'REFINEMENT',
+                'NOTIFICATION_VIEWED',
+                'ANALOG_WORKFLOW_RECIPIENT_DECEASED'
+            )
+        ),
+        notif AS (
+            SELECT
                 f.iun,
-                f.recindex,
                 f.category,
                 f.data_deposito,
                 f.data_fatturazione,
                 n.type_notif
             FROM fatturazione f
-            JOIN send.gold_notification_analytics n ON f.iun = n.iun
-            WHERE n.type_notif = 'ANALOG' 
+            INNER JOIN send.gold_notification_analytics n
+                ON f.iun = n.iun
+            WHERE n.type_notif = 'DIGITAL'
         ),
-        analog_attempts AS (
+        timeline AS (
             SELECT
-                t.iun,
-                 CAST(t.`timestamp` AS TIMESTAMP) AS analog_feedback_tms,
-                ROW_NUMBER() OVER (PARTITION BY t.iun ORDER BY CAST(regexp_extract(t.timelineelementid, 'ATTEMPT_([0-9]+)', 1) AS INT) DESC) AS rn,
-                SUBSTRING(t.timelineelementid, 22, 50) AS req_id
-            FROM send.silver_timeline t
-            WHERE t.category = 'SEND_ANALOG_FEEDBACK'
-        ),
-        gpa_dedup AS (
-            SELECT DISTINCT SUBSTRING(requestid, 25, 50) AS req_id,
-                lotto,
-                prodotto,
-                CASE
-                        WHEN codice_oggetto LIKE 'R14%' THEN 'Fulmine'
-                        WHEN codice_oggetto LIKE '777%' OR codice_oggetto LIKE 'PSTAQ777%' THEN 'POST & SERVICE'
-                        WHEN codice_oggetto LIKE '211%' THEN 'RTI Sailpost-Snem'
-                        WHEN codice_oggetto LIKE '69%'  OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%' THEN 'Poste'
-                        ELSE recapitista_unificato
-                    END AS recapitista_unif
-            FROM send.gold_postalizzazione_analytics
-            WHERE pcretry_rank = 1
+                c.iun,
+                MAX(
+                    CASE
+                        WHEN c.category = 'DIGITAL_FAILURE_WORKFLOW'
+                        THEN CAST(c.`timestamp` AS TIMESTAMP)
+                    END
+                ) AS digital_failure_workflow_tms,
+                MAX(
+                    CASE
+                        WHEN c.category = 'DIGITAL_SUCCESS_WORKFLOW'
+                        THEN CAST(c.`timestamp` AS TIMESTAMP)
+                    END
+                ) AS digital_success_workflow_tms
+            FROM send.silver_timeline c
+            WHERE c.category IN (
+                'DIGITAL_FAILURE_WORKFLOW',
+                'DIGITAL_SUCCESS_WORKFLOW'
+            )
+            GROUP BY c.iun
         )
         SELECT
-            n.iun,
-            n.recindex,
-            n.category,
-            n.type_notif,
-            n.data_deposito,
-            n.data_fatturazione,
-            a.analog_feedback_tms,
-            LEAST(a.analog_feedback_tms,n.data_fatturazione) AS end_date,
-            g.lotto,
-            g.prodotto,
-            g.recapitista_unif AS recapitista,
-            concat(
-                cast(year(n.data_fatturazione) AS string),
-                '_Q',
-                cast(quarter(n.data_fatturazione) AS string)
-            ) AS quarter_fatturazione
-        FROM analog_attempts a
-        JOIN notif n ON a.iun = n.iun
-        LEFT JOIN gpa_dedup g ON a.req_id = g.req_id
-        WHERE a.rn = 1
-        """
+            n.*,
+            t.digital_failure_workflow_tms,
+            t.digital_success_workflow_tms,
+            LEAST(
+                COALESCE(
+                    t.digital_failure_workflow_tms,
+                    t.digital_success_workflow_tms
+                ),
+                n.data_fatturazione
+            ) AS end_date
+        FROM notif n
+        LEFT JOIN timeline t
+            ON n.iun = t.iun
+        WHERE t.iun IS NOT NULL
+"""
 
-# Esecuzione della query spark e salvataggio in un dataframe
-df1 = spark.sql(query)
+# Esecuzione base + persist
+logging.info("Esecuzione query base")
+df_base = spark.sql(base_query)
 
-df1.createOrReplaceTempView("gold_postalizzazione")
+logging.info("Persist df1 (MEMORY_AND_DISK)")
+df1 = df_base.persist()
 
-######################################### Conteggio dei record -- TO DO: ranking unico
+# COUNT separato
+logging.info("Calcolo COUNT globale via Spark SQL")
 
-record_count_df = spark.sql("""
-    SELECT                       
-        COUNT(*) AS total_records
-    FROM 
-        gold_postalizzazione
+count_df = spark.sql(f"""
+        SELECT COUNT(*) AS total_records
+        FROM ({base_query}) q
     """)
+
+logging.info("Broadcast COUNT globale")
+count_df = F.broadcast(count_df)
+
+#prova cross join per portare il count nel dataset
+logging.info("Prova -- Cross join df1 con total_records")
+
+df1 = df1.crossJoin(count_df)
 
 # Dataframe delle festività -- N.B. da aggiungere presto quelle del 2026
 festivita = [
@@ -139,7 +151,20 @@ festivita = [
     ('2025-11-01', 'Ognissanti'),
     ('2025-12-08', 'Immacolata Concezione'),
     ('2025-12-25', 'Natale'),
-    ('2025-12-26', 'Santo Stefano')
+    ('2025-12-26', 'Santo Stefano'),
+
+    ('2026-01-01', 'Capodanno'),
+    ('2026-01-06', 'Epifania'),
+    ('2026-04-05', 'Pasqua'),
+    ('2026-04-06', 'Lunedì dell\'Angelo'),
+    ('2026-04-25', 'Festa della Liberazione'),
+    ('2026-05-01', 'Festa dei Lavoratori'),
+    ('2026-06-02', 'Festa della Repubblica'),
+    ('2026-08-15', 'Ferragosto'),
+    ('2026-11-01', 'Ognissanti'),
+    ('2026-12-08', 'Immacolata Concezione'),
+    ('2026-12-25', 'Natale'),
+    ('2026-12-26', 'Santo Stefano')
 ]
 
 holiday_dates = {datetime.strptime(date, '%Y-%m-%d').date() for date, _ in festivita}
@@ -187,10 +212,10 @@ holidays = festivita.select(F.collect_list("data").alias("holidays")).collect()[
 
 
 ################################## calcolo gg lavorativi
-logging.info("Calcolo t_completamento_analogico (UDF)")
+logging.info("Calcolo t_completamento_digitale (UDF)")
 
 df1 = df1.withColumn(
-    "t_completamento_analogico",
+    "t_completamento_digitale",
     datediff_workdays_udf(F.col("data_deposito"), F.col("end_date"))
 )
 
@@ -199,7 +224,7 @@ logging.info("Calcolo Ritardo SLA")
 
 df1 = df1.withColumn(
     "diff_gg_SLA",
-    F.col("t_completamento_analogico") - 70
+    F.col("t_completamento_digitale") - 23
 )
 
 ################################# Se ho un ritardo negativo allora forzo a 0
@@ -208,32 +233,6 @@ df1 = df1.withColumn(
     "Ritardo SLA",
     F.when( F.col("diff_gg_SLA") < 0, 0).otherwise(F.col("diff_gg_SLA"))
 )
-
-######################################### Filtraggio dei dati per ottenere solo i record con ritardo_recapito non misurabili - questo ci serve per il ranking
-ranking_data = df1.filter(
-    (F.col("Ritardo SLA").isNotNull())
-)
-
-######################################### Ranking
-
-window_spec = Window.orderBy( # FIX: niente finestra di partizione ma semplicemente un order by globale
-    F.col("Ritardo SLA").asc(),
-    F.col("end_date").asc(),
-    F.col("iun").asc()
-)
-
-ranking_data = ranking_data.withColumn("ranking", F.row_number().over(window_spec))
-
-ranking_data = ranking_data.select("iun", "ranking")
-
-df1 = df1.join(
-    ranking_data,
-    on="iun",
-    how="left"
-)
-
-#aggiungo la colonna total_records su tutte le righe di df1 tramite la cross join
-df1 = df1.crossJoin(record_count_df)
 
 ################################## calcolo ranking
 """
@@ -252,61 +251,85 @@ df1 = df1.withColumn(
 logging.info("Ranking globale calcolato")
 """
 ################################# percentuale oggetti ordinata
-
+"""
 logging.info("Calcolo percentuale_oggetti_ordinata")
 
 df1 = df1.withColumn(
     "percentuale_oggetti_ordinata",
     F.col("ranking") / F.col("total_records")
 )
+"""
+################################## corrispettivo_penale_digitale
 
-################################## corrispettivo_penale_analogica --- da Approfondire
-
-
-logging.info("Calcolo corrispettivo_penale_analogica")
+"""
+logging.info("Calcolo corrispettivo_penale_digitale")
 
 df1 = df1.withColumn(
-    "flag_penale_analogica",
-        F.when( (F.col("percentuale_oggetti_ordinata") < 0.97) & (F.col("Ritardo SLA") > 0), #Se rientro nel 97% e ho un ritardo allora calcolo la penale 
-               1 #FIX
-        ).otherwise(0) #FIX
-)
+    "corrispettivo_penale_digitale",
+    F.round(
+        F.when( #F.col("percentuale_oggetti_ordinata") < 0.99 & 
+               F.col("Ritardo SLA") > 0, #FIX: inserisco il ritardo SLA > 0 
+               0.2).otherwise(0),
+        2
+    )
+)"""
     
 ################################## Creazione della vista temporanea 
-df1.createOrReplaceTempView("analogicheDettaglio")
+df1.createOrReplaceTempView("digitaliDettaglio")
 
 logging.info("Scrittura tabella dettaglio")
 
 ################################## Estrazione dettaglio - scrittura in tabella --- N.B. non va estratta ma serve solamente per le verifiche
-spark.sql("""SELECT * FROM analogicheDettaglio""").writeTo("send_dev.inps_penali_analogiche_dettaglio")\
+spark.sql("""SELECT * FROM digitaliDettaglio""").writeTo("send_dev.inps_penali_digitali_dettaglio")\
                                         .using("iceberg")\
                                         .tableProperty("format-version","2")\
                                         .tableProperty("engine.hive.enabled","true")\
                                         .createOrReplace()
 
 ################################## Aggregato
-
 logging.info("Calcolo aggregato")
 
-df_aggregato = df1.groupBy( 
-    "quarter_fatturazione",
-    "recapitista",
-    "prodotto" #FIX
-).agg(
+df_aggregato = df1.agg(
     F.count("*").alias("Notifiche_Totali"),
-    F.sum( F.when(F.col("flag_penale_analogica") == 0, 1).otherwise(0)).alias("Notifiche_In_SLA"),    #FIX
-    F.sum(F.when(F.col("flag_penale_analogica") == 1, 1).otherwise(0)).alias("Notifiche_Fuori_SLA"),  #FIX
-    F.sum(F.when((F.col("flag_penale_analogica") == 0) & (F.col("Ritardo SLA") > 0), 1).otherwise(0)).alias("Notifiche_In_Penale_Esclusa_Franchigia") #FIX
-) #la penale sarà da calcolare sulla base di quello che ci dirà fatturazione
+    F.sum(
+        F.when(F.col("Ritardo SLA") == 0, 1).otherwise(0)
+    ).alias("Notifiche_In_SLA"),
+    F.sum(
+        F.when(F.col("Ritardo SLA") > 0, 1).otherwise(0)
+    ).alias("Notifiche_Fuori_SLA"),
+    # Percentuale notifiche fuori SLA al netto della franchigia 
+    F.greatest(
+        (F.sum(F.when(F.col("Ritardo SLA") > 0, 1).otherwise(0)) / F.count("*")) - F.lit(0.01),
+        F.lit(0)
+    ).alias("Percentuale_Notifiche_In_Penale_Esclusa_Franchigia"),
+    # Penale totale
+    (
+        F.greatest(
+            (F.sum(F.when(F.col("Ritardo SLA") > 0, 1).otherwise(0)) / F.count("*")) - F.lit(0.01),
+            F.lit(0)
+        )
+        * F.count("*")
+        * F.lit(0.2)
+    ).alias("Penale_Digitale")
+)
+    
+
+"""
+df_aggregato = df1.agg(
+    F.count("*").alias("Notifiche_Totali"),
+    F.sum(F.when((F.col("corrispettivo_penale_digitale") == 0), 1).otherwise(0)).alias("Calcolo_In_SLA"), # Calcolo N° di oggetti in SLA
+    F.sum(F.when((F.col("corrispettivo_penale_digitale") > 0), 1).otherwise(0)).alias("Calcolo_Fuori_SLA"), # Calcolo N° di oggetti fuori SLA
+    F.sum(F.when((F.col("percentuale_oggetti_ordinata") >= 0.99), 1).otherwise(0)).alias("Calcolo_Notifiche_Extra_Franchigia"), # Calcolo N° notifiche extra franchigia
+    F.round( F.sum(F.col("corrispettivo_penale_digitale")), 2 ).alias("Penale_Digitale") # Aggregato della penale digitale
+)"""
 
 ################################## Creazione della vista temporanea
-
 logging.info("Scrittura aggregato")
 
-df_aggregato.createOrReplaceTempView("analogicheAggregato")
+df_aggregato.createOrReplaceTempView("digitaliAggregato")
 
 ################################## Estrazione aggregato - scrittura in tabella 
-spark.sql("""SELECT * FROM analogicheAggregato""").writeTo("send_dev.inps_penali_analogiche_aggregato")\
+spark.sql("""SELECT * FROM digitaliAggregato""").writeTo("send_dev.inps_penali_digitali_aggregato")\
                                                  .using("iceberg")\
                                                  .tableProperty("format-version","2")\
                                                  .tableProperty("engine.hive.enabled","true")\
@@ -314,4 +337,5 @@ spark.sql("""SELECT * FROM analogicheAggregato""").writeTo("send_dev.inps_penali
 
 logging.info("Job completato con successo")
 
+df1.unpersist()
 spark.stop()
