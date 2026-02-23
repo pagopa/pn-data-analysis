@@ -73,7 +73,7 @@ ORDER BY percentuale_fuori_sla_totale_in_corso DESC;
 
 ----- Versione modificata --- Key client fuori SLA/Affidi
 
-WITH filtro_gold AS (
+WITH filtro_gold AS ( 
     SELECT *
     FROM send.gold_postalizzazione_analytics
     WHERE accettazione_recapitista_data IS NOT NULL
