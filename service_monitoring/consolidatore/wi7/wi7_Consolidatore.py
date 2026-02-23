@@ -130,13 +130,9 @@ df_start = spark.sql("""
             SELECT iun 
             FROM send.silver_incident_iun
         )
-        AND gna.actual_status <> 'CANCELLED' AND gpa.ultimo_evento_stato NOT IN ('P008','P010','P011')
-                     
-            AND gpa.requestID NOT IN (
-                                        SELECT requestid_computed
-                                        FROM send.silver_postalizzazione_denormalized
-                                         WHERE statusrequest IN ('PN999', 'PN998'))
-                
+        AND gna.actual_status <> 'CANCELLED' 
+        --- AND gpa.ultimo_evento_stato NOT IN ('P008','P010','P011')          
+        AND gpa.statusrequest NOT IN ('PN999', 'PN998', 'error', 'internalError', 'syntaxError')
 """)
 
 
