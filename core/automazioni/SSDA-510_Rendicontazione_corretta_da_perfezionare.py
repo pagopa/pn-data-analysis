@@ -327,9 +327,8 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     LEFT JOIN temp_ultimi_eventi_silver_postalizzazione t ON s.requestid = t.requestid
                 WHERE  s.scarto_consolidatore_stato IS NULL
                 -- AND (s.affido_recapitista_con016_data IS NOT NULL OR s.accettazione_recapitista_con018_data IS NOT NULL)
-                    AND s.ultimo_evento_stato NOT IN  ('P008', 'P010', 'P011')
                     AND s.flag_prodotto_estero = 0
-                    AND s.statusrequest NOT IN ('PN999', 'PN998') --- FIX: sto usando direttamente lo status request della gold - è necessario controllare se sia null? non penso
+                    AND s.statusrequest NOT IN ('PN999', 'PN998', 'error', 'internalError', 'syntaxError','transformationError','semanticError','authenticationError', 'duplicatedRequest')
             ),
             --- 3° CTE temp_postalizzazione: aggiunge i flag di assenza_inesito, assenza_messa_in_giacenza, assenza_dematerializzazione_23l_ar_plico, assenza_demat_*, assenza_recag012
             temp_postalizzazione AS (

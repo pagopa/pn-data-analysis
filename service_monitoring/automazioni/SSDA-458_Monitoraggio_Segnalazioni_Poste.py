@@ -1,18 +1,22 @@
-from pyspark.sql import SparkSession
-from pdnd_google_utils import Sheet
-import pandas as pd
 import json
-import os
 import logging
+import os
 from datetime import datetime
 
+import pandas as pd
+from pdnd_google_utils import Sheet
+from pyspark.sql import SparkSession
+
 # ---------------- CONFIGURAZIONE BASE ----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
 SHEET_ID = "10z0rWNRNGlNLylAcqjiqnwlIDf5zdzT8-MDr2l1ZUf0"
 
 # ---------------- FUNZIONI ----------------
+
 
 def load_google_credentials(secret_path: str) -> dict:
     """Legge i file di credenziali e li restituisce come dizionario."""
@@ -26,8 +30,10 @@ def load_google_credentials(secret_path: str) -> dict:
 
 
 # inserire la funzione che mi esegue la query del report esiti da bonificare e me la salva in tabella
-def report_esiti_da_bonificare(spark: SparkSession): #non restituisce nulla perchè salva in tabella
-    logging.info("Esecuzione query Report Esiti Da Bonificare...") 
+def report_esiti_da_bonificare(
+    spark: SparkSession,
+):  # non restituisce nulla perchè salva in tabella
+    logging.info("Esecuzione query Report Esiti Da Bonificare...")
 
     query_report_esiti_da_bonificare = f"""
         WITH temp_demat AS (
@@ -74,14 +80,14 @@ def report_esiti_da_bonificare(spark: SparkSession): #non restituisce nulla perc
                         ELSE NULL
                     END AS tipo
                 FROM send.silver_postalizzazione t
-                LATERAL VIEW EXPLODE(t.eventslist) AS e 
+                LATERAL VIEW EXPLODE(t.eventslist) AS e
                 WHERE e.paperprogrstatus.statuscode IN (
                     'RECRN001A','RECRN002A','RECRN002D','RECRN003A','RECRN004A','RECRN005A','RECAG001A',
                     'RECAG002A','RECAG003A','RECAG003D','RECAG005A','RECAG006A','RECAG007A','RECAG008A',
                     'RECRN001C','RECRN002C','RECRN002F','RECRN003C','RECRN004C','RECRN005C','RECAG001C',
                     'RECAG002C','RECAG003C','RECAG003F','RECAG005C','RECAG006C','RECAG007C','RECAG008C'
                 ) AND e.paperprogrstatus.statuscode NOT IN ('PN999','PN998')
-            ), 
+            ),
             vista_silver_postalizzazione AS (
                 SELECT *,
                     ROW_NUMBER() OVER (
@@ -98,7 +104,7 @@ def report_esiti_da_bonificare(spark: SparkSession): #non restituisce nulla perc
                     MAX( CASE WHEN tipo = 'FINE_RECAPITO' THEN clientrequesttimestamp END ) AS fine_recapito_rendicontazione,
                     MAX( CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statuscode END ) AS certificazione_recapito_stato,
                     MAX( CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statusdatetime END ) AS certificazione_recapito_data,
-                    MAX( CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN clientrequesttimestamp END ) AS certificazione_recapito_rendicontazione  
+                    MAX( CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN clientrequesttimestamp END ) AS certificazione_recapito_rendicontazione
                 FROM
                     ---- FIX inserita vista sulla silver_postalizzazione
                     vista_silver_postalizzazione
@@ -204,7 +210,7 @@ def report_esiti_da_bonificare(spark: SparkSession): #non restituisce nulla perc
                         WHEN s.certificazione_recapito_dettagli IN ('M02') THEN 1
                         ELSE 0
                     END AS flag_destinatario_deceduto,
-                    CASE 
+                    CASE
                         WHEN s.flag_wi7_report_postalizzazioni_incomplete = 1 THEN  1
                         ELSE 0
                     END flag_fuori_sla,
@@ -313,14 +319,13 @@ def report_esiti_da_bonificare(spark: SparkSession): #non restituisce nulla perc
                     LEFT JOIN send.gold_notification_analytics n ON (s.iun = n.iun)
                     LEFT JOIN send.silver_timeline tl ON (s.iun = tl.iun AND tl.category = 'SCHEDULE_REFINEMENT')
                     ---- FIX inserita vista sui massimi eventi della silver_postalizzazione
-                    LEFT JOIN max_events_silver_postalizzazione t ON (s.requestid = t.requestid)        
+                    LEFT JOIN max_events_silver_postalizzazione t ON (s.requestid = t.requestid)
                 WHERE
                     s.requestid NOT IN ( SELECT requestid FROM send_dev.wi7_poste_da_escludere )
                     AND s.scarto_consolidatore_stato IS NULL
                     AND s.fine_recapito_stato IS NOT NULL
-                    AND s.ultimo_evento_stato NOT IN  ('P008', 'P010', 'P011')
                     AND s.flag_prodotto_estero = 0
-                    AND s.statusrequest NOT IN ('PN999', 'PN998') --- FIX statusrequest ora è presente direttamente a livello della gold quindi posso prenderlo direttamente da li 
+                    AND s.statusrequest NOT IN ('PN999', 'PN998', 'error', 'internalError', 'syntaxError','transformationError','semanticError','authenticationError', 'duplicatedRequest')
             ),
             temp_postalizzazione AS (
                 SELECT
@@ -468,7 +473,7 @@ def report_esiti_da_bonificare(spark: SparkSession): #non restituisce nulla perc
                         OR controllo_date_business = 1
                         OR controllo_tripletta = 1
                         OR controllo_tempistiche_compiuta_giacenza = 1
-                        OR controllo_inesito_casi_giacenza = 1 
+                        OR controllo_inesito_casi_giacenza = 1
 				        OR controllo_documentType = 1 THEN 1
                         ELSE 0
                     END AS flag_errore_rendicontazione,
@@ -520,30 +525,29 @@ def report_esiti_da_bonificare(spark: SparkSession): #non restituisce nulla perc
                         OR flag_esiti_mancanti = 1
                     )
             )
-            SELECT DISTINCT * 
+            SELECT DISTINCT *
             FROM finale_filtrato;
          """
-    
+
     df_report = spark.sql(query_report_esiti_da_bonificare)
 
     df_report.createOrReplaceTempView("DF_REPORT")
 
-    spark.sql("""SELECT * FROM DF_REPORT""").writeTo("send_dev.report_bonifica_esiti")\
-                .using("iceberg")\
-                .tableProperty("format-version","2")\
-                .tableProperty("engine.hive.enabled","true")\
-                .createOrReplace()
-    
+    spark.sql("""SELECT * FROM DF_REPORT""").writeTo(
+        "send_dev.report_bonifica_esiti"
+    ).using("iceberg").tableProperty("format-version", "2").tableProperty(
+        "engine.hive.enabled", "true"
+    ).createOrReplace()
 
 
-#questa funzione invece una volta salvata in tabella il report di riferimento, mi esegue la query che metto di seguito 
+# questa funzione invece una volta salvata in tabella il report di riferimento, mi esegue la query che metto di seguito
 def run_query(spark: SparkSession) -> dict:
-    logging.info("Esecuzione query finale Monitoraggio segnalazioni Poste...") 
+    logging.info("Esecuzione query finale Monitoraggio segnalazioni Poste...")
 
     query_monitoraggio_segnalazioni_poste = f"""
         SELECT ticket,
             COUNT(*) AS totale_segnalato,
-            --COUNT(CASE WHEN g.fine_recapito_stato IS NOT NULL THEN 1 END ) AS totale_bonificato, -- valutare se inserire oppure no 
+            --COUNT(CASE WHEN g.fine_recapito_stato IS NOT NULL THEN 1 END ) AS totale_bonificato, -- valutare se inserire oppure no
             COUNT(CASE WHEN g.fine_recapito_stato IS NULL THEN 1 END) AS oggetti_ancora_da_bonificare,
             COUNT(CASE WHEN t.flag_esiti_mancanti = 1 OR flag_errore_rendicontazione = 1 THEN 1 END) AS oggetti_con_bonifica_errata,
             (COUNT(CASE WHEN g.fine_recapito_stato IS NULL THEN 1 END) + COUNT(CASE WHEN t.flag_esiti_mancanti = 1 OR flag_errore_rendicontazione = 1 THEN 1 END)) AS residuo_da_bonificare
@@ -552,9 +556,8 @@ def run_query(spark: SparkSession) -> dict:
         LEFT JOIN send_dev.report_bonifica_esiti t ON s.requestid = t.requestid
         GROUP BY ticket;
         """
-    
 
-    df_spark = spark.sql(query_monitoraggio_segnalazioni_poste) 
+    df_spark = spark.sql(query_monitoraggio_segnalazioni_poste)
 
     logging.info("Query finale trasformata in Pandas DataFrame")
 
@@ -565,12 +568,14 @@ def run_query(spark: SparkSession) -> dict:
 def get_last_update_date(spark: SparkSession) -> str:
     """Estrae la data più recente (MAX(requesttimestamp)) dal dataset."""
     logging.info("Estrazione data ultimo aggiornamento...")
-    
-    max_date_df = spark.sql("SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics") 
-    max_date = max_date_df.collect()[0]["max_ts"] 
 
-    if isinstance(max_date, datetime): 
-        return max_date.strftime("%Y-%m-%d %H:%M:%S") 
+    max_date_df = spark.sql(
+        "SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics"
+    )
+    max_date = max_date_df.collect()[0]["max_ts"]
+
+    if isinstance(max_date, datetime):
+        return max_date.strftime("%Y-%m-%d %H:%M:%S")
     return str(max_date)
 
 
@@ -578,26 +583,28 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
     """Esporta i dati su Google Sheet."""
     logging.info(f"Scrittura su Google Sheet: {sheet_name}")
     df = df.astype(str)
-    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode="key")
     sheet.upload(sheet_name, df)
     logging.info("Scrittura completata.")
 
 
 # ---------------- MAIN SCRIPT ----------------
 
+
 def main():
     logging.info("Inizializzazione SparkSession...")
-    spark = SparkSession.builder.appName("SSDA-458 Monitoraggio Segnalazioni Poste").getOrCreate()
+    spark = SparkSession.builder.appName(
+        "SSDA-458 Monitoraggio Segnalazioni Poste"
+    ).getOrCreate()
 
     # Caricamento credenziali Google
     creds = load_google_credentials(GOOGLE_SECRET_PATH)
-    sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode="key")
 
-    
-    #Esecuzione query Esiti da Bonificare e salvataggio in tabella
+    # Esecuzione query Esiti da Bonificare e salvataggio in tabella
     report_esiti_da_bonificare(spark)
-    
-    #come aggiungere un log per vedere se la scrittura è andata a buon fine?
+
+    # come aggiungere un log per vedere se la scrittura è andata a buon fine?
 
     # Esecuzione query finale
     df = run_query(spark)
@@ -606,8 +613,6 @@ def main():
     logging.info(f"Scrittura su sheet standard: {sheet_name}")
     # Scrittura dei dati su Google Sheets
     export_to_sheets(df, creds, SHEET_ID, sheet_name)
-
-    
 
     # Calcolo date di aggiornamento
     max_date_str = get_last_update_date(spark)
@@ -623,13 +628,15 @@ def main():
     logging.info(f"Ultimo aggiornamento dati gold_postalizzazione: {max_date_str}")
     logging.info(f"Data di esecuzione del job: {job_time}")
 
-    update_df = pd.DataFrame({
-        "Ultimo aggiornamento dati (MAX requesttimestamp)": [max_date_str],
-        "Data esecuzione script (UTC)": [job_time]
-    })
+    update_df = pd.DataFrame(
+        {
+            "Ultimo aggiornamento dati (MAX requesttimestamp)": [max_date_str],
+            "Data esecuzione script (UTC)": [job_time],
+        }
+    )
 
     # Scrittura della data di aggiornamento
-    #sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
+    # sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
     sheet.upload("Data aggiornamento", update_df)
 
     # Chiusura Spark

@@ -349,9 +349,8 @@ def build_queries() -> dict:
                     s.requestid NOT IN ( SELECT requestid FROM send_dev.wi7_poste_da_escludere )
                     AND s.scarto_consolidatore_stato IS NULL
                     AND s.fine_recapito_stato IS NOT NULL
-                    AND s.ultimo_evento_stato NOT IN  ('P008', 'P010', 'P011')
                     AND s.flag_prodotto_estero = 0
-                    AND s.statusrequest NOT IN ('PN999', 'PN998') --- FIX statusrequest ora è presente direttamente a livello della gold quindi posso prenderlo direttamente da li
+                    AND s.statusrequest NOT IN ('PN999', 'PN998', 'error', 'internalError', 'syntaxError','transformationError','semanticError','authenticationError', 'duplicatedRequest')
             ),
             temp_postalizzazione AS (
                 SELECT

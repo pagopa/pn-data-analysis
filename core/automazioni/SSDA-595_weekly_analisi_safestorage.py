@@ -605,7 +605,7 @@ def run_query_not_found_att(spark: SparkSession) -> pd.DataFrame:
                     WHEN tms_cancelled IS NOT NULL THEN 'Oggetto cancellato'
                     WHEN flag_schedule_refinement = 1 THEN 'Oggetto in previsione di perfezionamento'
                     WHEN statusrequest IN ('PN999', 'PN998') OR fine_recapito_stato IN ('PN999', 'PN998') OR tentativo_recapito_stato IN ('PN999', 'PN998') OR certificazione_recapito_stato IN ('PN999', 'PN998') THEN 'Oggetto bloccato con PN998 / PN999'
-                    WHEN ultimo_evento_stato IN  ('P008', 'P010', 'P011') THEN 'Oggetto scartato con P008 / P010 / P011'
+                    WHEN statusrequest IN ('error', 'internalError', 'syntaxError','transformationError','semanticError','authenticationError', 'duplicatedRequest') THEN 'Oggetto scartato con eventi di errore'
                     WHEN scarto_consolidatore_stato IS NOT NULL THEN 'Oggetto scartato dal Consolidatore'
                     WHEN flag_tavolo_duplicati_poste = 1 THEN 'Oggetto rientrante in tavolo Duplicati 23i/23l Poste'
                     WHEN flag_tavolo_non_rendicontabili_poste = 1 THEN 'Oggetto rientrante in tavolo Non Rendicontabili Poste'
