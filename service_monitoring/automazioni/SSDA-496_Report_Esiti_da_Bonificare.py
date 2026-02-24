@@ -1,28 +1,33 @@
-import time
-from pyspark.sql import SparkSession
-from pdnd_google_utils import Sheet
-import pandas as pd
 import json
-import os
 import logging
+import os
+import time
 from datetime import datetime
 
+import numpy as np
+import pandas as pd
+from pdnd_google_utils import Sheet
+from pyspark.sql import SparkSession
+
 # ---------------- CONFIGURAZIONE BASE ----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
 # Versione L3
 SHEET_ID_L3 = "1s83mCJAC3Yxye2pBlNaPPEFUkHC8U4eCuhNdZxe1T0I"
 # Versione General
-SHEET_ID_L4 = "1B_8YkdtruSqCtkrukjHtAqPUnrelNrGySYmhv4t5Myc" 
+SHEET_ID_L4 = "1B_8YkdtruSqCtkrukjHtAqPUnrelNrGySYmhv4t5Myc"
 
-#Versione Recapitisti
+# Versione Recapitisti
 SHEET_ID_Fulmine = "1qeNYn3al9iFVlJ7rlR_zO9NXLld313rsx3aFlHL0ekA"
 SHEET_ID_Poste = "1idDmew64tfxfI7-KdI4BrYwD-xWm5PxINTsY6rWQoQs"
 SHEET_ID_Sailpost = "1JSIum1WhNXJ1CZ-TAuvs8GbeDqeITNqLduVzeLUUInI"
 SHEET_ID_Po_Se = "1FDVU_LyK_Ch9DJBsOni0k-4mEKeH7pREc3UiUkSclo8"
 
 # ---------------- FUNZIONI ----------------
+
 
 def load_google_credentials(secret_path: str) -> dict:
     """Legge i file di credenziali e li restituisce come dizionario."""
@@ -33,6 +38,18 @@ def load_google_credentials(secret_path: str) -> dict:
     }
     logging.info(f"Credenziali caricate: {list(creds.keys())}")
     return creds
+
+
+def sanitize_for_sheets(df: pd.DataFrame, missing: str = "-") -> pd.DataFrame:
+    df = df.copy()
+
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    df = df.fillna(missing)
+
+    df = df.astype(object).where(pd.notna(df), missing)
+
+    return df
 
 
 def build_queries() -> dict:
@@ -81,16 +98,16 @@ def build_queries() -> dict:
                             'RECRN003A','RECRN004A','RECRN005A','RECRN001A','RECRN002A','RECRN002D','RECAG001A',
                             'RECAG002A','RECAG003A','RECAG003D','RECAG005A','RECAG006A','RECAG007A','RECAG008A'
                         ) THEN 'CERTIFICAZIONE_RECAPITO'
-                        ELSE null
+                        ELSE NULL
                     END AS tipo
                 FROM send.silver_postalizzazione t
-                LATERAL VIEW EXPLODE(t.eventslist) AS e 
+                LATERAL VIEW EXPLODE(t.eventslist) AS e
                 WHERE e.paperprogrstatus.statuscode IN (
                     'RECRN001A','RECRN002A','RECRN002D','RECRN003A','RECRN004A','RECRN005A','RECAG001A',
                     'RECAG002A','RECAG003A','RECAG003D','RECAG005A','RECAG006A','RECAG007A','RECAG008A',
                     'RECRN001C','RECRN002C','RECRN002F','RECRN003C','RECRN004C','RECRN005C','RECAG001C',
                     'RECAG002C','RECAG003C','RECAG003F','RECAG005C','RECAG006C','RECAG007C','RECAG008C'
-                )
+                ) AND e.paperprogrstatus.statuscode NOT IN ('PN999','PN998')
             ),
             vista_silver_postalizzazione AS (
                 SELECT *,
@@ -108,7 +125,7 @@ def build_queries() -> dict:
                     MAX( CASE WHEN tipo = 'FINE_RECAPITO' THEN clientrequesttimestamp END ) AS fine_recapito_rendicontazione,
                     MAX( CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statuscode END ) AS certificazione_recapito_stato,
                     MAX( CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statusdatetime END ) AS certificazione_recapito_data,
-                    MAX( CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN clientrequesttimestamp END ) AS certificazione_recapito_rendicontazione  
+                    MAX( CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN clientrequesttimestamp END ) AS certificazione_recapito_rendicontazione
                 FROM
                     ---- FIX inserita vista sulla silver_postalizzazione
                     vista_silver_postalizzazione
@@ -148,6 +165,7 @@ def build_queries() -> dict:
                         WHEN s.affido_recapitista_con016_data IS NOT NULL THEN s.affido_recapitista_con016_data
                         ELSE s.requesttimestamp
                     END AS affido_accettazione_rec_data,
+                    s.data_deposito,
                     s.tentativo_recapito_stato,
                     s.tentativo_recapito_data,
                     s.tentativo_recapito_data_rendicontazione,
@@ -175,6 +193,7 @@ def build_queries() -> dict:
                     s.perfezionamento_notificationdate,
                     s.perfezionamento_stato,
                     s.perfezionamento_stato_dettagli,
+                    s.ultimo_evento_stato,
                     LEAST (
                         COALESCE(n.tms_viewed, n.tms_effective_date),
                         COALESCE(n.tms_effective_date, n.tms_viewed)
@@ -185,6 +204,7 @@ def build_queries() -> dict:
                     END AS flag_schedule_refinement,
                     s.tms_cancelled,
                     n.tms_date_payment,
+                    s.flag_wi7_consolidatore,
                     s.flag_wi7_report_postalizzazioni_incomplete,
                     s.wi7_cluster,
                     s.pcretry_rank,
@@ -196,6 +216,7 @@ def build_queries() -> dict:
                     t.fine_recapito_data AS fine_recapito_data_silver,
                     t.fine_recapito_rendicontazione AS fine_recapito_rendicontazione_silver,
                     d.documenttype,
+                    CASE WHEN w.requestid IS NOT NULL THEN 1 ELSE 0 END AS  flag_wi7_poste,
                     CASE
                         WHEN n.type_notif = 'MULTI' THEN 1
                         ELSE 0
@@ -210,6 +231,10 @@ def build_queries() -> dict:
                         WHEN s.certificazione_recapito_dettagli IN ('M02') THEN 1
                         ELSE 0
                     END AS flag_destinatario_deceduto,
+                    CASE
+                        WHEN s.flag_wi7_report_postalizzazioni_incomplete = 1 THEN  1
+                        ELSE 0
+                    END flag_fuori_sla,
                     CASE
                         WHEN s.certificazione_recapito_stato NOT IN ('RECRS002A','RECRN002A','RECAG003A','RECRS002D','RECRN002D','RECAG003D')
                             AND s.certificazione_recapito_dettagli IN ('M01','M03','M04','M02','M05','M06','M07','M08','M09') THEN 1
@@ -314,17 +339,19 @@ def build_queries() -> dict:
                 FROM
                     send.gold_postalizzazione_analytics s
                     LEFT JOIN temp_demat d ON d.requestid = s.requestid AND d.rn_demat = 1
+                    LEFT JOIN send_dev.wi7_poste_da_escludere w ON s.requestid = w.requestid
                     LEFT JOIN send.silver_notification sn ON (sn.iun = s.iun)
                     LEFT JOIN send.gold_notification_analytics n ON (s.iun = n.iun)
                     LEFT JOIN send.silver_timeline tl ON (s.iun = tl.iun AND tl.category = 'SCHEDULE_REFINEMENT')
                     ---- FIX inserita vista sui massimi eventi della silver_postalizzazione
-                    LEFT JOIN max_events_silver_postalizzazione t ON (s.requestid = t.requestid)        
+                    LEFT JOIN max_events_silver_postalizzazione t ON (s.requestid = t.requestid)
                 WHERE
                     s.requestid NOT IN ( SELECT requestid FROM send_dev.wi7_poste_da_escludere )
                     AND s.scarto_consolidatore_stato IS NULL
                     AND s.fine_recapito_stato IS NOT NULL
+                    AND s.ultimo_evento_stato NOT IN  ('P008', 'P010', 'P011')
                     AND s.flag_prodotto_estero = 0
-                    AND s.statusrequest NOT IN ('PN999', 'PN998') --- FIX statusrequest ora è presente direttamente a livello della gold quindi posso prenderlo direttamente da li 
+                    AND s.statusrequest NOT IN ('PN999', 'PN998') --- FIX statusrequest ora è presente direttamente a livello della gold quindi posso prenderlo direttamente da li
             ),
             temp_postalizzazione AS (
                 SELECT
@@ -472,7 +499,7 @@ def build_queries() -> dict:
                         OR controllo_date_business = 1
                         OR controllo_tripletta = 1
                         OR controllo_tempistiche_compiuta_giacenza = 1
-                        OR controllo_inesito_casi_giacenza = 1 
+                        OR controllo_inesito_casi_giacenza = 1
 				        OR controllo_documentType = 1 THEN 1
                         ELSE 0
                     END AS flag_errore_rendicontazione,
@@ -512,7 +539,7 @@ def build_queries() -> dict:
                     flag_ultima_postalizzazione = 1
                     AND tms_cancelled IS NULL
                     AND flag_schedule_refinement = 0
-                    AND (certificazione_recapito_stato NOT IN ('RECRS006','RECRS013','RECRN006','RECRN013','RECAG004','RECAG013') 
+                    AND (certificazione_recapito_stato NOT IN ('RECRS006','RECRS013','RECRN006','RECRN013','RECAG004','RECAG013')
                          OR certificazione_recapito_stato IS NULL)
                     AND (
                         tentativo_recapito_stato NOT IN ('PN998', 'PN999')
@@ -527,13 +554,18 @@ def build_queries() -> dict:
             )
     """
     # Query VGeneral
-    query_general = query_sql_base + """
-    SELECT DISTINCT * 
+    query_general = (
+        query_sql_base
+        + """
+    SELECT DISTINCT *
     FROM finale_filtrato;
     """
+    )
 
     # Base per recapitisti
-    query_base_recapitisti = query_sql_base + """
+    query_base_recapitisti = (
+        query_sql_base
+        + """
     SELECT DISTINCT
         requestid,
         requesttimestamp,
@@ -549,26 +581,41 @@ def build_queries() -> dict:
         Causa_mancato_perfezionamento
     FROM finale_filtrato
     """
+    )
 
     # Query derivate con filtro per recapitista
-    query_fulmine = query_base_recapitisti + """
+    query_fulmine = (
+        query_base_recapitisti
+        + """
     WHERE recapitista_unif = 'Fulmine'
     """
+    )
 
-    query_poste = query_base_recapitisti + """
+    query_poste = (
+        query_base_recapitisti
+        + """
     WHERE recapitista_unif = 'Poste'
     """
+    )
 
-    query_post_service = query_base_recapitisti + """
+    query_post_service = (
+        query_base_recapitisti
+        + """
     WHERE recapitista_unif = 'POST & SERVICE'
     """
+    )
 
-    query_sailpost = query_base_recapitisti + """
+    query_sailpost = (
+        query_base_recapitisti
+        + """
     WHERE recapitista_unif = 'RTI Sailpost-Snem'
     """
+    )
 
     # Query per L3 - senza filtro dei recapitisti
-    query_l3 = query_sql_base + """
+    query_l3 = (
+        query_sql_base
+        + """
     SELECT DISTINCT
         senderpaid,
         senderdenomination,
@@ -588,40 +635,48 @@ def build_queries() -> dict:
         Causa_mancato_perfezionamento
     FROM finale_filtrato;
     """
+    )
 
     return {
-        "general" : query_general,
-        "Fulmine": query_fulmine,
         "Poste": query_poste,
+        "Fulmine": query_fulmine,
         "POST & SERVICE": query_post_service,
         "RTI Sailpost-Snem": query_sailpost,
-        "L3": query_l3
+        "L3": query_l3,
+        "general": query_general,
     }
 
+
 # FUNZIONI AUSILIARIE
+
 
 def run_query(spark: SparkSession, query_sql: str) -> pd.DataFrame:
     """Esegue la query su Spark e restituisce un DataFrame Pandas."""
     logging.info("Esecuzione query su Spark...")
     df_spark = spark.sql(query_sql)
     logging.info("Trasformazione in Pandas DataFrame...")
-    return df_spark.toPandas()
+    df_pandas = df_spark.toPandas()
+    df_pandas = sanitize_for_sheets(df_pandas, "-")
+    return df_pandas
 
 
 def get_last_update_date(spark: SparkSession) -> str:
     """Estrae la data più recente (MAX(requesttimestamp)) dal dataset."""
     logging.info("Estrazione data ultimo aggiornamento...")
 
-    max_date_df = spark.sql("SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics")
+    max_date_df = spark.sql(
+        "SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics"
+    )
     max_date = max_date_df.collect()[0]["max_ts"]
 
     if isinstance(max_date, datetime):
         return max_date.strftime("%Y-%m-%d %H:%M:%S")
     return str(max_date)
 
+
 """
 def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: str):
-    
+
     logging.info(f"Scrittura su Google Sheet: {sheet_name}")
     df = df.astype(str)
     sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode='key')
@@ -629,15 +684,16 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
     logging.info("Scrittura completata.")
 """
 
+
 def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: str):
     """
     Esporta i dati su Google Sheet a blocchi, utilizzando nativamente
     la funzione upload() della libreria pdnd_google_utils, senza sovrascrivere tutto.
     """
     logging.info(f"Scrittura su Google Sheet: {sheet_name}")
-    df = df.fillna("").astype(str)
+    df = df.fillna("-").astype(str)
 
-    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode="key")
 
     chunk_size = 10000
     total_rows = len(df)
@@ -652,8 +708,8 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
         ul_cell = f"A{ul_row}"
 
         # Se non è il primo chunk, disattiva header e pulizia automatica
-        header = (i == 0)
-        clear_on_open = (i == 0)
+        header = i == 0
+        clear_on_open = i == 0
 
         try:
             logging.info(f"Caricamento righe {start}–{end} (ul_cell={ul_cell})...")
@@ -672,7 +728,9 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
 
     logging.info(" Tutti i chunk caricati correttamente su Google Sheet.")
 
+
 # ---------------- MAIN SCRIPT ----------------
+
 
 def main():
     logging.info("Inizializzazione SparkSession...")
@@ -684,31 +742,47 @@ def main():
 
     # Caricamento credenziali Google
     creds = load_google_credentials(GOOGLE_SECRET_PATH)
-    #sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
+    # sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
 
     # Costruisci tutte le query
     queries = build_queries()
 
     # Mappatura nome query --> sheet di destinazione
     SHEET_MAP = {
-        "general": { "sheet_id": SHEET_ID_L4, "sheet_name": "Estrazione Esiti da Bonificare" },
-        "L3": { "sheet_id": SHEET_ID_L3, "sheet_name": "Estrazione Esiti da Bonificare" },
-        "Fulmine": { "sheet_id": SHEET_ID_Fulmine, "sheet_name": "Esiti da Bonificare - Fulmine" },
-        "Poste": { "sheet_id": SHEET_ID_Poste, "sheet_name": "Esiti da Bonificare - Poste" },
-        "POST & SERVICE": { "sheet_id": SHEET_ID_Po_Se, "sheet_name": "Esiti da Bonificare - Post & Service" },
-        "RTI Sailpost-Snem": { "sheet_id": SHEET_ID_Sailpost, "sheet_name": "Esiti da Bonificare - Sailpost-Snem" }
+        "Poste": {
+            "sheet_id": SHEET_ID_Poste,
+            "sheet_name": "Esiti da Bonificare - Poste",
+        },
+        "Fulmine": {
+            "sheet_id": SHEET_ID_Fulmine,
+            "sheet_name": "Esiti da Bonificare - Fulmine",
+        },
+        "POST & SERVICE": {
+            "sheet_id": SHEET_ID_Po_Se,
+            "sheet_name": "Esiti da Bonificare - Post & Service",
+        },
+        "RTI Sailpost-Snem": {
+            "sheet_id": SHEET_ID_Sailpost,
+            "sheet_name": "Esiti da Bonificare - Sailpost-Snem",
+        },
+        "L3": {"sheet_id": SHEET_ID_L3, "sheet_name": "Estrazione Esiti da Bonificare"},
+        "general": {
+            "sheet_id": SHEET_ID_L4,
+            "sheet_name": "Estrazione Esiti da Bonificare",
+        },
     }
 
     # 1. Calcolo una volta le date del job
     job_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     max_date_str = get_last_update_date(spark)
 
-    update_df = pd.DataFrame({
-        "Ultimo aggiornamento dati (MAX requesttimestamp)": [max_date_str],
-        "Data esecuzione job": [job_time]
-    })
+    update_df = pd.DataFrame(
+        {
+            "Ultimo aggiornamento dati (MAX requesttimestamp)": [max_date_str],
+            "Data esecuzione job": [job_time],
+        }
+    )
 
-   
     # 2. Per ogni query → export + aggiornamento tab
     for nome_query, query_sql in queries.items():
         try:
@@ -735,10 +809,11 @@ def main():
             export_to_sheets(update_df, creds, sheet_id_target, "Aggiornamento Job")
 
         except Exception as e:
-            logging.error(f"Errore durante elaborazione di {nome_query}: {e}", exc_info=True)
+            logging.error(
+                f"Errore durante elaborazione di {nome_query}: {e}", exc_info=True
+            )
             continue
 
-    
     spark.stop()
     logging.info("Job completato con successo.")
 

@@ -1,19 +1,24 @@
-from pyspark.sql import SparkSession
-from pdnd_google_utils import Sheet
-import pandas as pd
 import json
-import os
 import logging
+import os
 from datetime import datetime
 
+import numpy as np
+import pandas as pd
+from pdnd_google_utils import Sheet
+from pyspark.sql import SparkSession
+
 # ---------------- CONFIGURAZIONE BASE ----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
-SHEET_ID = "1WPPV-eEGKbF5FM4qSJ8-jb0-qshianTesKRQGgItxC4" #trovare il modo di stampare su terminale il percorso del file
+SHEET_ID = "1WPPV-eEGKbF5FM4qSJ8-jb0-qshianTesKRQGgItxC4"  # trovare il modo di stampare su terminale il percorso del file
 
 
 # ---------------- FUNZIONI ----------------
+
 
 def load_google_credentials(secret_path: str) -> dict:
     """Legge i file di credenziali e li restituisce come dizionario."""
@@ -25,6 +30,13 @@ def load_google_credentials(secret_path: str) -> dict:
     logging.info(f"Credenziali caricate: {list(creds.keys())}")
     return creds
 
+
+def sanitize_for_sheets(df: pd.DataFrame, missing: str = "-") -> pd.DataFrame:
+    df = df.copy()
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df = df.fillna(missing)
+    df = df.astype(object).where(pd.notna(df), missing)
+    return df
 
 
 def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
@@ -66,7 +78,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     CASE
                         WHEN e.paperprogrstatus.statuscode IN (
                             'RECRN003C','RECRN004C','RECRN005C','RECRN001C','RECRN002C','RECRN002F','RECAG001C',
-                            'RECAG002C','RECAG003C','RECAG003F','RECAG005C','RECAG006C','RECAG007C','RECAG008C' 
+                            'RECAG002C','RECAG003C','RECAG003F','RECAG005C','RECAG006C','RECAG007C','RECAG008C'
                             ) THEN 'FINE_RECAPITO'
                         WHEN e.paperprogrstatus.statuscode IN (
                             'RECRN003A','RECRN004A','RECRN005A','RECRN001A','RECRN002A','RECRN002D','RECAG001A',
@@ -75,14 +87,14 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         ELSE NULL
                     END AS tipo
                 FROM send.silver_postalizzazione t
-                LATERAL VIEW EXPLODE(t.eventslist) AS e 
+                LATERAL VIEW EXPLODE(t.eventslist) AS e
                 WHERE e.paperprogrstatus.statuscode IN (
                     'RECRN001A','RECRN002A','RECRN002D','RECRN003A','RECRN004A','RECRN005A','RECAG001A',
                     'RECAG002A','RECAG003A','RECAG003D','RECAG005A','RECAG006A','RECAG007A','RECAG008A',
                     'RECRN001C','RECRN002C','RECRN002F','RECRN003C','RECRN004C','RECRN005C','RECAG001C',
                     'RECAG002C','RECAG003C','RECAG003F','RECAG005C','RECAG006C','RECAG007C','RECAG008C'
                 ) AND e.paperprogrstatus.statuscode NOT IN ('PN999','PN998')
-            ), 
+            ),
             --- Aggiunta di una cte intemrdia per la gestione del rownumber
             temp_silver_postalizzazione AS (
                 SELECT *,
@@ -93,7 +105,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 FROM base
             ),
             ---- 2° CTE temp_ultimi_eventisilver_postalizzazione: prendo il MAX di certificazione recapito e fine recapito
-            temp_ultimi_eventi_silver_postalizzazione AS (    
+            temp_ultimi_eventi_silver_postalizzazione AS (
                 SELECT
                     requestid,
                     MAX( CASE WHEN tipo = 'FINE_RECAPITO' THEN statuscode END ) AS fine_recapito_stato,
@@ -107,7 +119,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 WHERE rn = 1
                 GROUP BY requestid
             ),
-            --- 2° CTE: pesco i campi necessari dalla gold_postalizzazione+ gold_notification + timeline + silver_postalizzazione ed aggiungo i controlli necessari 
+            --- 2° CTE: pesco i campi necessari dalla gold_postalizzazione+ gold_notification + timeline + silver_postalizzazione ed aggiungo i controlli necessari
             temp_controlli AS (
                 SELECT
                     s.senderpaid,
@@ -202,7 +214,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         WHEN s.certificazione_recapito_dettagli IN ('M02') THEN 1
                         ELSE 0
                     END AS flag_destinatario_deceduto,
-                    CASE 
+                    CASE
                         WHEN s.flag_wi7_report_postalizzazioni_incomplete = 1 THEN  1
                         ELSE 0
                     END flag_fuori_sla,
@@ -306,7 +318,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         ELSE 1
                     END AS controllo_documentType
                 FROM send.gold_postalizzazione_analytics s
-                    LEFT JOIN temp_demat d ON d.requestid = s.requestid AND d.rn_demat = 1 
+                    LEFT JOIN temp_demat d ON d.requestid = s.requestid AND d.rn_demat = 1
                     LEFT JOIN send_dev.wi7_poste_da_escludere w ON s.requestid = w.requestid
                     LEFT JOIN send.silver_notification sn ON (sn.iun = s.iun)
                     LEFT JOIN send.gold_notification_analytics n ON (s.iun = n.iun)
@@ -344,7 +356,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         (
                             fine_recapito_stato IN ('RECAG008C') AND ( demat_23l_ar_stato IS NULL OR demat_plico_stato IS NULL)
                         )
-                        OR ( 
+                        OR (
                             demat_23l_ar_stato IS NULL AND demat_plico_stato IS NULL
                         ),
                         1,
@@ -367,13 +379,13 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 --- FIX : aggiunta temp_controlli
                 FROM temp_controlli s
             ),
-            --- 4° CTE: mi costruisco il flag di esiti mancanti 
-            --- Seleziono tutti i campi di prima e in più aggiungo un flag unico sugli esiti mancanti se trovo almeno un esito mancante tra quelli calcolati prima 
+            --- 4° CTE: mi costruisco il flag di esiti mancanti
+            --- Seleziono tutti i campi di prima e in più aggiungo un flag unico sugli esiti mancanti se trovo almeno un esito mancante tra quelli calcolati prima
             temp_assenza_eventi AS (
             SELECT
                 *,
                 IF(
-                    assenza_inesito = 1 OR assenza_messa_in_giacenza = 1 OR assenza_pre_esito = 1 
+                    assenza_inesito = 1 OR assenza_messa_in_giacenza = 1 OR assenza_pre_esito = 1
                     OR assenza_dematerializzazione_23l_ar_plico = 1 OR assenza_demat_ARCAD = 1 OR assenza_RECAG012 = 1,
                     1,
                     0
@@ -479,7 +491,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     WHEN (flag_wi7_report_postalizzazioni_incomplete = 1  OR flag_wi7_consolidatore = 1) AND flag_wi7_poste = 0  THEN 'Oggetto fuori sla'
                     WHEN flag_destinatario_deceduto = 1 THEN  'Oggetto restituito al mittente (esito destinatario deceduto)'
                     WHEN (
-                        controllo_causale = 1 OR controllo_date_business = 1 OR controllo_tripletta = 1  OR controllo_tempistiche_compiuta_giacenza = 1 
+                        controllo_causale = 1 OR controllo_date_business = 1 OR controllo_tripletta = 1  OR controllo_tempistiche_compiuta_giacenza = 1
                         OR controllo_inesito_casi_giacenza = 1 OR flag_esiti_mancanti = 1 OR controllo_documentType = 1
                     ) AND fine_recapito_stato IS NOT NULL THEN 'Errore rendicontazione/assenza eventi intermedi'
                     WHEN (controllo_causale = 0  AND controllo_date_business = 0 AND controllo_tripletta = 0 AND controllo_tempistiche_compiuta_giacenza = 0
@@ -501,11 +513,11 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 t.assenza_demat_ARCAD,
                 t.assenza_RECAG012
             -- w.requestid AS requestid_wi7_escludere
-            FROM temp_assenza_eventi t 
+            FROM temp_assenza_eventi t
                 --LEFT JOIN send_dev.wi7_poste_da_escludere w ON t.requestid = w.requestid
         ),
         finale_filtrato AS (
-            SELECT 
+            SELECT
                     CAST(CAST(NOW() AS DATE) AS STRING) AS data_estrazione,
                     senderpaid,
                     senderdenomination, -- FIX inserito il senderdenomination
@@ -573,7 +585,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
             WHERE
                 flag_ultima_postalizzazione = 1
                 AND tms_cancelled IS NULL
-                AND flag_schedule_refinement = 0 
+                AND flag_schedule_refinement = 0
                 -- FIX da controllare il requesid_wi7 da escludere che c'era prima
                 AND ( certificazione_recapito_stato NOT IN ('RECRS006','RECRS013','RECRN006','RECRN013','RECAG004','RECAG013')  OR certificazione_recapito_stato  IS  NULL)
                 AND COALESCE(tentativo_recapito_stato, '') NOT IN ('PN998','PN999')
@@ -588,22 +600,30 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         WHERE cluster_mancato_perfezionamento = 'Oggetto con rendicontazione corretta in analisi Team Prodotto'
         """
 
-    df_spark = spark.sql(query_sql) 
-    logging.info("Trasformazione in Pandas DataFrame...") 
-    return df_spark.toPandas()
+    df_spark = spark.sql(query_sql)
+    logging.info("Trasformazione in Pandas DataFrame...")
 
+    # Conversione in Pandas
+    df_pandas = df_spark.toPandas()
+
+    # gestione delle casistiche NaN/NaT
+    df_pandas = sanitize_for_sheets(df_pandas, "-")
+
+    return df_pandas
 
 
 # FUNZIONI AUSILIARIE
 def get_last_update_date(spark: SparkSession) -> str:
     """Estrae la data più recente (MAX(requesttimestamp)) dal dataset."""
     logging.info("Estrazione data ultimo aggiornamento...")
-    
-    max_date_df = spark.sql("SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics") 
-    max_date = max_date_df.collect()[0]["max_ts"] 
 
-    if isinstance(max_date, datetime): 
-        return max_date.strftime("%Y-%m-%d %H:%M:%S") 
+    max_date_df = spark.sql(
+        "SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics"
+    )
+    max_date = max_date_df.collect()[0]["max_ts"]
+
+    if isinstance(max_date, datetime):
+        return max_date.strftime("%Y-%m-%d %H:%M:%S")
     return str(max_date)
 
 
@@ -611,14 +631,17 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
     """Esporta i dati su Google Sheet."""
     logging.info(f"Scrittura su Google Sheet: {sheet_name}")
     df = df.astype(str)
-    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode="key")
     sheet.upload(sheet_name, df)
     logging.info("Scrittura completata.")
 
+
 # Nuova funzione - test
-def merge_weekly_data(spark: SparkSession, creds: dict, sheet_id: str, data_max_deposito: str):
+def merge_weekly_data(
+    spark: SparkSession, creds: dict, sheet_id: str, data_max_deposito: str
+):
     logging.info("Lettura dati storici dal sheet 'Estrazione weekly SSDA-510'...")
-    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode="key")
 
     try:
         df_weekly_old = sheet.download("Estrazione weekly SSDA-510")
@@ -633,7 +656,9 @@ def merge_weekly_data(spark: SparkSession, creds: dict, sheet_id: str, data_max_
 
     if not df_weekly_old.empty:
         df_new_filtered = df_new[~df_new["requestid"].isin(df_weekly_old["requestid"])]
-        logging.info(f"Record nuovi non presenti nello storico: {df_new_filtered.shape[0]}")
+        logging.info(
+            f"Record nuovi non presenti nello storico: {df_new_filtered.shape[0]}"
+        )
     else:
         df_new_filtered = df_new
 
@@ -643,11 +668,15 @@ def merge_weekly_data(spark: SparkSession, creds: dict, sheet_id: str, data_max_
 
     # Merge
     if not df_weekly_old.empty:
-        df_weekly_updated = pd.concat([df_weekly_old, df_new_filtered], ignore_index=True)
+        df_weekly_updated = pd.concat(
+            [df_weekly_old, df_new_filtered], ignore_index=True
+        )
     else:
         df_weekly_updated = df_new_filtered
 
-    logging.info(f"Totale record aggiornati nello storico: {df_weekly_updated.shape[0]}")
+    logging.info(
+        f"Totale record aggiornati nello storico: {df_weekly_updated.shape[0]}"
+    )
 
     # FIX 2: conversione a stringhe (CRITICO)
     df_weekly_updated = df_weekly_updated.astype(str)
@@ -659,13 +688,16 @@ def merge_weekly_data(spark: SparkSession, creds: dict, sheet_id: str, data_max_
 
 # ---------------- MAIN SCRIPT ----------------
 
+
 def main():
     logging.info("Inizializzazione SparkSession...")
-    spark = SparkSession.builder.appName("SSDA-510 Rendicontazione corretta da perfezionare").getOrCreate()
+    spark = SparkSession.builder.appName(
+        "SSDA-510 Rendicontazione corretta da perfezionare"
+    ).getOrCreate()
 
     # Caricamento credenziali Google
     creds = load_google_credentials(GOOGLE_SECRET_PATH)
-    sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode="key")
 
     # lettura data_max_deposito dallo sheet "Data aggiornamento"
     logging.info("Lettura data_max_deposito da sheet 'Data aggiornamento'...")
@@ -673,7 +705,9 @@ def main():
     df_data_agg = sheet.download("Data aggiornamento")
 
     if df_data_agg.shape[0] < 1:
-        raise ValueError("Lo sheet 'Data aggiornamento' non contiene una data valida (manca la riga dati).")
+        raise ValueError(
+            "Lo sheet 'Data aggiornamento' non contiene una data valida (manca la riga dati)."
+        )
 
     # Lettura A2
     data_max_deposito = str(df_data_agg.iloc[0, 0]).strip()
@@ -683,10 +717,9 @@ def main():
 
     logging.info(f"data_max_deposito letta: {data_max_deposito}")
 
-
     # Esecuzione merge settimanale
     df_weekly_updated = merge_weekly_data(spark, creds, SHEET_ID, data_max_deposito)
-    
+
     # Aggiorna date nello sheet "Data aggiornamento"
     max_date_str = get_last_update_date(spark)
     job_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -698,7 +731,9 @@ def main():
     # aggiorniamo solo C e D sulla riga del senderpaid (riga 1 indice base zero)
 
     df_data_agg.loc[1, "Data max deposito"] = data_max_deposito
-    df_data_agg.loc[1, "Ultimo aggiornamento dati (MAX requesttimestamp)"] = max_date_str
+    df_data_agg.loc[1, "Ultimo aggiornamento dati (MAX requesttimestamp)"] = (
+        max_date_str
+    )
     df_data_agg.loc[1, "Data esecuzione script (UTC)"] = job_time
 
     # Scrittura sul foglio intero senza sovrascrivere il senderpaid

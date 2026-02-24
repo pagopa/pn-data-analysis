@@ -1,22 +1,27 @@
-import time
-from pyspark.sql import SparkSession
-from pdnd_google_utils import Sheet
-import pandas as pd
 import json
-import os
 import logging
+import os
+import time
 from datetime import datetime
 
+import numpy as np
+import pandas as pd
+from pdnd_google_utils import Sheet
+from pyspark.sql import SparkSession
+
 # ---------------- CONFIGURAZIONE BASE ----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
 
-SHEET_ID_DETTAGLIO = "1k6MLUpu1ljFupXf7rOEUrforWgabQAnZvpOBhGhzo4c" 
+SHEET_ID_DETTAGLIO = "1k6MLUpu1ljFupXf7rOEUrforWgabQAnZvpOBhGhzo4c"
 SHEET_ID_AGGREGATO = "1OivdWPlLr-RYqhU5axCZUayzBCtjNRGPRLRs5qUw6wA"
 
 
 # ---------------- FUNZIONI ----------------
+
 
 def load_google_credentials(secret_path: str) -> dict:
     """Legge i file di credenziali e li restituisce come dizionario."""
@@ -29,17 +34,29 @@ def load_google_credentials(secret_path: str) -> dict:
     return creds
 
 
-def staging_basequery(spark: SparkSession): 
+def sanitize_for_sheets(df: pd.DataFrame, missing: str = "-") -> pd.DataFrame:
+    df = df.copy()
+
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    df = df.fillna(missing)
+
+    df = df.astype(object).where(pd.notna(df), missing)
+
+    return df
+
+
+def staging_basequery(spark: SparkSession):
 
     # Query base -- versione CDE con Lateral View
     query_sql_base = """
-        WITH 
+        WITH
             cte_postalizzazione_certificazione_recapito AS (
                 SELECT DISTINCT
                     t.requestid,
                     e.paperprogrstatus.statuscode AS certificazione_recapito_stato,
                     CASE
-                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17 
+                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17
                         THEN CONCAT(SUBSTRING(e.paperprogrstatus.statusdatetime, 1, 16), ':00Z')
                         ELSE e.paperprogrstatus.statusdatetime
                     END AS statusdatetime,
@@ -66,7 +83,7 @@ def staging_basequery(spark: SparkSession):
                     t.requestid,
                     e.paperprogrstatus.statuscode AS certificazione_recapito_stato,
                     CASE
-                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17 
+                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17
                         THEN CONCAT(SUBSTRING(e.paperprogrstatus.statusdatetime, 1, 16), ':00Z')
                         ELSE e.paperprogrstatus.statusdatetime
                     END AS statusdatetime
@@ -79,11 +96,11 @@ def staging_basequery(spark: SparkSession):
                     t.requestid,
                     e.paperprogrstatus.statuscode AS certificazione_recapito_stato,
                     CASE
-                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17 
+                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17
                         THEN CONCAT(SUBSTRING(e.paperprogrstatus.statusdatetime, 1, 16), ':00Z')
                         ELSE e.paperprogrstatus.statusdatetime
                     END AS statusdatetime,
-                    e.paperprogrstatus.deliveryfailurecause AS deliveryfailurecause 
+                    e.paperprogrstatus.deliveryfailurecause AS deliveryfailurecause
                 FROM send.silver_postalizzazione t
                 LATERAL VIEW EXPLODE(t.eventslist) e AS e
                 WHERE e.paperprogrstatus.statuscode IN (
@@ -105,17 +122,17 @@ def staging_basequery(spark: SparkSession):
                 HAVING COUNT(*) > 1
             ),
             unione_requestid AS (
-                SELECT requestid, campo_switch 
+                SELECT requestid, campo_switch
                 FROM vista_conteggio_duplicati
                 UNION
-                SELECT requestid, campo_switch 
+                SELECT requestid, campo_switch
                 FROM conteggio_duplicati_inesito
                 WHERE requestid NOT IN (
                     SELECT requestid FROM vista_conteggio_duplicati
                 )
             ),
             dettaglio AS (
-                SELECT 
+                SELECT
                     SUBSTRING(u.requestid, 13) AS requestid,
                     u.campo_switch,
                     g.recapitista,
@@ -131,13 +148,13 @@ def staging_basequery(spark: SparkSession):
                     SUBSTRING(t.requestid, 13) AS requestid,
                     e.paperprogrstatus.statuscode AS statuscode,
                     CASE
-                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17 
+                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17
                         THEN CONCAT(SUBSTRING(e.paperprogrstatus.statusdatetime, 1, 16), ':00Z')
                         ELSE e.paperprogrstatus.statusdatetime
                     END AS statusdatetime,
                     e.paperprogrstatus.deliveryfailurecause AS deliveryfailurecause,
                     CASE
-                        WHEN LENGTH(e.paperprogrstatus.clientrequesttimestamp) = 17 
+                        WHEN LENGTH(e.paperprogrstatus.clientrequesttimestamp) = 17
                         THEN CONCAT(SUBSTRING(e.paperprogrstatus.clientrequesttimestamp, 1, 16), ':00Z')
                         ELSE e.paperprogrstatus.clientrequesttimestamp
                     END AS clientrequesttimestamp
@@ -176,13 +193,13 @@ def staging_basequery(spark: SparkSession):
                     SUBSTRING(t.requestid, 13) AS requestid,
                     e.paperprogrstatus.statuscode AS statuscode,
                     CASE
-                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17 
+                        WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17
                         THEN CONCAT(SUBSTRING(e.paperprogrstatus.statusdatetime, 1, 16), ':00Z')
                         ELSE e.paperprogrstatus.statusdatetime
                     END AS statusdatetime,
                     e.paperprogrstatus.deliveryfailurecause AS deliveryfailurecause,
                     CASE
-                        WHEN LENGTH(e.paperprogrstatus.clientrequesttimestamp) = 17 
+                        WHEN LENGTH(e.paperprogrstatus.clientrequesttimestamp) = 17
                         THEN CONCAT(SUBSTRING(e.paperprogrstatus.clientrequesttimestamp, 1, 16), ':00Z')
                         ELSE e.paperprogrstatus.clientrequesttimestamp
                     END AS clientrequesttimestamp
@@ -249,12 +266,12 @@ def staging_basequery(spark: SparkSession):
     df = spark.sql(query_sql_base)
 
     df.createOrReplaceTempView("DF_BASE")
-                            
-    spark.sql("""SELECT * FROM DF_BASE""").writeTo("send_dev.temp_correzione_preesito")\
-                .using("iceberg")\
-                .tableProperty("format-version","2")\
-                .tableProperty("engine.hive.enabled","true")\
-                .createOrReplace()		     
+
+    spark.sql("""SELECT * FROM DF_BASE""").writeTo(
+        "send_dev.temp_correzione_preesito"
+    ).using("iceberg").tableProperty("format-version", "2").tableProperty(
+        "engine.hive.enabled", "true"
+    ).createOrReplace()
 
 
 def build_queries() -> dict:
@@ -274,22 +291,22 @@ def build_queries() -> dict:
             DATEDIFF(data_rendicontazione_massimo_evento, data_rendicontazione_minimo_evento) AS `diff_rend_rend_primo_ultimo_pre-esito` -- trovarci un nome più parlante
         FROM send_dev.temp_correzione_preesito
         ), totale_affidi AS (
-            SELECT  
+            SELECT
                 g.recapitista,
                 g.lotto,
                 MONTH(COALESCE(g.accettazione_recapitista_con018_data, g.affido_recapitista_con016_data)) AS mese_accettazione,
                 YEAR(COALESCE(g.accettazione_recapitista_con018_data, g.affido_recapitista_con016_data)) AS anno_accettazione,
                 COUNT(*) AS totale_accettate
             FROM send.gold_postalizzazione_analytics g
-            GROUP BY 
+            GROUP BY
                 g.recapitista,
                 g.lotto,
                 MONTH(COALESCE(g.accettazione_recapitista_con018_data, g.affido_recapitista_con016_data)),
                 YEAR(COALESCE(g.accettazione_recapitista_con018_data, g.affido_recapitista_con016_data))
-        )SELECT 
-            t.recapitista, 
-            t.lotto, 
-            t.mese_accettazione, 
+        )SELECT
+            t.recapitista,
+            t.lotto,
+            t.mese_accettazione,
             t.anno_accettazione,
             COALESCE(COUNT(v.requestid), 0) AS conteggio_requestid_con_esito_ritrasmesso,
             t.totale_accettate,
@@ -320,53 +337,58 @@ def build_queries() -> dict:
         AND v.lotto = t.lotto
         AND v.mese_accettazione = t.mese_accettazione
         AND v.anno_accettazione = t.anno_accettazione
-        GROUP BY 
-            t.recapitista, 
-            t.lotto, 
-            t.mese_accettazione, 
-            t.anno_accettazione, 
+        GROUP BY
+            t.recapitista,
+            t.lotto,
+            t.mese_accettazione,
+            t.anno_accettazione,
             t.totale_accettate
-        ORDER BY 
-            t.anno_accettazione, 
-            t.mese_accettazione, 
-            t.recapitista, 
+        ORDER BY
+            t.anno_accettazione,
+            t.mese_accettazione,
+            t.recapitista,
             t.lotto;"""
 
-    return {
-        "dettaglio" : query_dettaglio,
-        "aggregato": query_aggregato
-    }
+    return {"dettaglio": query_dettaglio, "aggregato": query_aggregato}
+
 
 # FUNZIONI AUSILIARIE
+
 
 def run_query(spark: SparkSession, query_sql: str) -> pd.DataFrame:
     """Esegue la query su Spark e restituisce un DataFrame Pandas."""
     logging.info("Esecuzione query su Spark...")
     df_spark = spark.sql(query_sql)
     logging.info("Trasformazione in Pandas DataFrame...")
-    return df_spark.toPandas()
+    df_pandas = df_spark.toPandas()
+    df_pandas = sanitize_for_sheets(df_pandas)
+    return df_pandas
 
 
 def get_last_update_date(spark: SparkSession) -> str:
     """Estrae la data più recente (MAX(requesttimestamp)) dal dataset."""
     logging.info("Estrazione data ultimo aggiornamento...")
 
-    max_date_df = spark.sql("SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics")
+    max_date_df = spark.sql(
+        "SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics"
+    )
     max_date = max_date_df.collect()[0]["max_ts"]
 
     if isinstance(max_date, datetime):
         return max_date.strftime("%Y-%m-%d %H:%M:%S")
     return str(max_date)
 
+
 """
 def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: str):
-    
+
     logging.info(f"Scrittura su Google Sheet: {sheet_name}")
     df = df.astype(str)
     sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode='key')
     sheet.upload(sheet_name, df)
     logging.info("Scrittura completata.")
 """
+
 
 # Questa funzione probabilmente può essere utilizzata solamente per il livello di dettaglio? vedere le righe della base aggregato
 def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: str):
@@ -377,7 +399,7 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
     logging.info(f"Scrittura su Google Sheet: {sheet_name}")
     df = df.fillna("").astype(str)
 
-    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode="key")
 
     chunk_size = 10000
     total_rows = len(df)
@@ -392,8 +414,8 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
         ul_cell = f"A{ul_row}"
 
         # Se non è il primo chunk, disattiva header e pulizia automatica
-        header = (i == 0)
-        clear_on_open = (i == 0)
+        header = i == 0
+        clear_on_open = i == 0
 
         try:
             logging.info(f"Caricamento righe {start}–{end} (ul_cell={ul_cell})...")
@@ -412,7 +434,9 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
 
     logging.info(" Tutti i chunk caricati correttamente su Google Sheet.")
 
+
 # ---------------- MAIN SCRIPT ----------------
+
 
 def main():
     logging.info("Inizializzazione SparkSession...")
@@ -420,13 +444,13 @@ def main():
 
     spark_conf = spark.sparkContext.getConf().getAll()
     for k, v in spark_conf:
-        logging.info(f"{k}: {v}") 
-        
+        logging.info(f"{k}: {v}")
+
     # Caricamento credenziali Google
     creds = load_google_credentials(GOOGLE_SECRET_PATH)
-    #sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
+    # sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
 
-    #Esecuzione dello staging per la tabella temp
+    # Esecuzione dello staging per la tabella temp
     logging.info("Staging basequery...")
     staging_basequery(spark)
 
@@ -436,20 +460,27 @@ def main():
     # Mappatura nome query --> sheet di destinazione
     # DA AGGIORNARE IN BASE ALLE MODIFICHE EFFETTUATE
     SHEET_MAP = {
-        "dettaglio": { "sheet_id": SHEET_ID_DETTAGLIO, "sheet_name": "Estrazione Dettaglio" },
-        "aggregato": { "sheet_id": SHEET_ID_AGGREGATO, "sheet_name": "Estrazione Aggregato" }
+        "dettaglio": {
+            "sheet_id": SHEET_ID_DETTAGLIO,
+            "sheet_name": "Estrazione Dettaglio",
+        },
+        "aggregato": {
+            "sheet_id": SHEET_ID_AGGREGATO,
+            "sheet_name": "Estrazione Aggregato",
+        },
     }
 
     # 1. Calcolo una volta le date del job
     job_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     max_date_str = get_last_update_date(spark)
 
-    update_df = pd.DataFrame({
-        "Ultimo aggiornamento dati (MAX requesttimestamp)": [max_date_str],
-        "Data esecuzione job": [job_time]
-    })
+    update_df = pd.DataFrame(
+        {
+            "Ultimo aggiornamento dati (MAX requesttimestamp)": [max_date_str],
+            "Data esecuzione job": [job_time],
+        }
+    )
 
-   
     # 2. Per ogni query -> export + aggiornamento tab
     for nome_query, query_sql in queries.items():
         try:
@@ -476,10 +507,11 @@ def main():
             export_to_sheets(update_df, creds, sheet_id_target, "Aggiornamento Job")
 
         except Exception as e:
-            logging.error(f"Errore durante elaborazione di {nome_query}: {e}", exc_info=True)
+            logging.error(
+                f"Errore durante elaborazione di {nome_query}: {e}", exc_info=True
+            )
             continue
 
-    
     spark.stop()
     logging.info("Job completato con successo.")
 
