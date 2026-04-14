@@ -435,90 +435,223 @@ def _costruisci_df_base(spark: SparkSession):
             d.*,
             CAST(d.affido_accettazione_rec_data AS STRING) AS acc_str
         FROM dati_gold_filtrati d
+    ),
+
+    poste_da_escludere_dedup AS (
+        SELECT DISTINCT
+            requestid
+        FROM send_dev.wi7_poste_da_escludere
+    ),
+
+    base_con_criticita AS (
+        SELECT
+            f.senderpaid,
+            f.iun,
+            f.requestid,
+            f.requesttimestamp AS requestDateTime,
+            f.prodotto,
+            CONCAT("'", f.geokey) AS geokey,
+            f.region_name AS regione,
+            f.province_name AS provincia,
+            f.recapitista_unif,
+            f.lotto,
+            f.codice_oggetto AS codiceOggetto,
+            f.affido_consolidatore_data,
+            f.stampa_imbustamento_CON080_data,
+            f.affido_recapitista_CON016_data,
+            f.accettazione_recapitista_CON018_data,
+            SUBSTRING(f.acc_str, 1, 7) AS mese_anno_accettazione,
+            SUBSTRING(f.acc_str, 1, 4) AS anno_accettazione,
+            f.affido_conservato_CON020_data,
+            f.materialita_pronta_CON09A_data,
+            f.scarto_consolidatore_stato,
+            f.scarto_consolidatore_data,
+            f.tentativo_recapito_stato,
+            f.tentativo_recapito_data,
+            f.tentativo_recapito_data_rendicontazione,
+            f.messaingiacenza_recapito_stato,
+            f.messaingiacenza_recapito_data,
+            f.messaingiacenza_recapito_data_rendicontazione,
+            f.certificazione_recapito_stato,
+            f.certificazione_recapito_dettagli,
+            f.certificazione_recapito_data,
+            f.certificazione_recapito_data_rendicontazione,
+            f.demat_23l_ar_stato,
+            f.demat_23l_ar_data_rendicontazione,
+            f.demat_plico_stato,
+            f.demat_plico_data_rendicontazione,
+            f.demat_arcad_stato,
+            f.demat_arcad_data_rendicontazione,
+            f.fine_recapito_stato,
+            f.fine_recapito_data,
+            f.fine_recapito_data_rendicontazione,
+            f.accettazione_23L_RECAG012_data,
+            f.accettazione_23L_RECAG012_data_rendicontazione,
+            f.rend_23L_stato,
+            f.rend_23L_data,
+            f.rend_23L_data_rendicontazione,
+            f.perfezionamento_data,
+            f.perfezionamento_tipo,
+            f.perfezionamento_notificationdate,
+            f.perfezionamento_stato,
+            f.perfezionamento_stato_dettagli,
+            f.flag_wi7_report_postalizzazioni_incomplete,
+            f.wi7_cluster,
+
+            CASE
+                WHEN inp.senderpaid IS NOT NULL
+                    AND f.perfezionamento_data IS NULL
+                    AND e.requestid IS NULL
+                THEN 'Critico'
+
+                WHEN sem.senderpaid IS NOT NULL
+                    AND e.requestid IS NULL
+                THEN 'Critico'
+
+                ELSE NULL
+            END AS criticita,
+
+            CASE
+                WHEN sem.senderpaid IS NOT NULL THEN 'SI'
+                ELSE 'NO'
+            END AS ente_attenzionato
+
+        FROM finale f
+
+        LEFT JOIN input_senderpaid inp
+            ON f.senderpaid = inp.senderpaid
+
+        LEFT JOIN senderpaid_sempre_critici sem
+            ON f.senderpaid = sem.senderpaid
+
+        LEFT JOIN poste_da_escludere_dedup e
+            ON f.requestid = e.requestid
+    ),
+
+    base_dedup AS (
+        SELECT
+            senderpaid,
+            iun,
+            requestid,
+            requestDateTime,
+            prodotto,
+            geokey,
+            regione,
+            provincia,
+            recapitista_unif,
+            lotto,
+            codiceOggetto,
+            affido_consolidatore_data,
+            stampa_imbustamento_CON080_data,
+            affido_recapitista_CON016_data,
+            accettazione_recapitista_CON018_data,
+            mese_anno_accettazione,
+            anno_accettazione,
+            affido_conservato_CON020_data,
+            materialita_pronta_CON09A_data,
+            scarto_consolidatore_stato,
+            scarto_consolidatore_data,
+            tentativo_recapito_stato,
+            tentativo_recapito_data,
+            tentativo_recapito_data_rendicontazione,
+            messaingiacenza_recapito_stato,
+            messaingiacenza_recapito_data,
+            messaingiacenza_recapito_data_rendicontazione,
+            certificazione_recapito_stato,
+            certificazione_recapito_dettagli,
+            certificazione_recapito_data,
+            certificazione_recapito_data_rendicontazione,
+            demat_23l_ar_stato,
+            demat_23l_ar_data_rendicontazione,
+            demat_plico_stato,
+            demat_plico_data_rendicontazione,
+            demat_arcad_stato,
+            demat_arcad_data_rendicontazione,
+            fine_recapito_stato,
+            fine_recapito_data,
+            fine_recapito_data_rendicontazione,
+            accettazione_23L_RECAG012_data,
+            accettazione_23L_RECAG012_data_rendicontazione,
+            rend_23L_stato,
+            rend_23L_data,
+            rend_23L_data_rendicontazione,
+            perfezionamento_data,
+            perfezionamento_tipo,
+            perfezionamento_notificationdate,
+            perfezionamento_stato,
+            perfezionamento_stato_dettagli,
+            flag_wi7_report_postalizzazioni_incomplete,
+            wi7_cluster,
+            criticita,
+            ente_attenzionato
+        FROM (
+            SELECT
+                b.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY b.recapitista_unif, b.requestid, b.requestDateTime
+                    ORDER BY b.requestDateTime DESC
+                ) AS rn
+            FROM base_con_criticita b
+        ) t
+        WHERE t.rn = 1
     )
 
     SELECT
-        f.senderpaid,
-        f.iun,
-        f.requestid,
-        f.requesttimestamp AS requestDateTime,
-        f.prodotto,
-        CONCAT("'", f.geokey) AS geokey,
-        f.region_name AS regione,
-        f.province_name AS provincia,
-        f.recapitista_unif,
-        f.lotto,
-        f.codice_oggetto AS codiceOggetto,
-        f.affido_consolidatore_data,
-        f.stampa_imbustamento_CON080_data,
-        f.affido_recapitista_CON016_data,
-        f.accettazione_recapitista_CON018_data,
-        SUBSTRING(f.acc_str, 1, 7) AS mese_anno_accettazione,
-        SUBSTRING(f.acc_str, 1, 4) AS anno_accettazione,
-        f.affido_conservato_CON020_data,
-        f.materialita_pronta_CON09A_data,
-        f.scarto_consolidatore_stato,
-        f.scarto_consolidatore_data,
-        f.tentativo_recapito_stato,
-        f.tentativo_recapito_data,
-        f.tentativo_recapito_data_rendicontazione,
-        f.messaingiacenza_recapito_stato,
-        f.messaingiacenza_recapito_data,
-        f.messaingiacenza_recapito_data_rendicontazione,
-        f.certificazione_recapito_stato,
-        f.certificazione_recapito_dettagli,
-        f.certificazione_recapito_data,
-        f.certificazione_recapito_data_rendicontazione,
-        f.demat_23l_ar_stato,
-        f.demat_23l_ar_data_rendicontazione,
-        f.demat_plico_stato,
-        f.demat_plico_data_rendicontazione,
-        f.demat_arcad_stato,
-        f.demat_arcad_data_rendicontazione,
-        f.fine_recapito_stato,
-        f.fine_recapito_data,
-        f.fine_recapito_data_rendicontazione,
-        f.accettazione_23L_RECAG012_data,
-        f.accettazione_23L_RECAG012_data_rendicontazione,
-        f.rend_23L_stato,
-        f.rend_23L_data,
-        f.rend_23L_data_rendicontazione,
-        f.perfezionamento_data,
-        f.perfezionamento_tipo,
-        f.perfezionamento_notificationdate,
-        f.perfezionamento_stato,
-        f.perfezionamento_stato_dettagli,
-        f.flag_wi7_report_postalizzazioni_incomplete,
-        f.wi7_cluster,
-
-        CASE
-            WHEN inp.senderpaid IS NOT NULL
-                AND f.perfezionamento_data IS NULL
-                AND e.requestid IS NULL
-            THEN 'Critico'
-
-            WHEN sem.senderpaid IS NOT NULL
-                AND e.requestid IS NULL
-            THEN 'Critico'
-
-            ELSE NULL
-        END AS criticita,
-
-        CASE
-            WHEN sem.senderpaid IS NOT NULL THEN 'SI'
-            ELSE 'NO'
-        END AS ente_attenzionato
-
-    FROM finale f
-
-    LEFT JOIN input_senderpaid inp
-        ON f.senderpaid = inp.senderpaid
-
-    LEFT JOIN senderpaid_sempre_critici sem
-        ON f.senderpaid = sem.senderpaid
-
-    LEFT JOIN send_dev.wi7_poste_da_escludere e
-        ON f.requestid = e.requestid
+        senderpaid,
+        iun,
+        requestid,
+        requestDateTime,
+        prodotto,
+        geokey,
+        regione,
+        provincia,
+        recapitista_unif,
+        lotto,
+        codiceOggetto,
+        affido_consolidatore_data,
+        stampa_imbustamento_CON080_data,
+        affido_recapitista_CON016_data,
+        accettazione_recapitista_CON018_data,
+        mese_anno_accettazione,
+        anno_accettazione,
+        affido_conservato_CON020_data,
+        materialita_pronta_CON09A_data,
+        scarto_consolidatore_stato,
+        scarto_consolidatore_data,
+        tentativo_recapito_stato,
+        tentativo_recapito_data,
+        tentativo_recapito_data_rendicontazione,
+        messaingiacenza_recapito_stato,
+        messaingiacenza_recapito_data,
+        messaingiacenza_recapito_data_rendicontazione,
+        certificazione_recapito_stato,
+        certificazione_recapito_dettagli,
+        certificazione_recapito_data,
+        certificazione_recapito_data_rendicontazione,
+        demat_23l_ar_stato,
+        demat_23l_ar_data_rendicontazione,
+        demat_plico_stato,
+        demat_plico_data_rendicontazione,
+        demat_arcad_stato,
+        demat_arcad_data_rendicontazione,
+        fine_recapito_stato,
+        fine_recapito_data,
+        fine_recapito_data_rendicontazione,
+        accettazione_23L_RECAG012_data,
+        accettazione_23L_RECAG012_data_rendicontazione,
+        rend_23L_stato,
+        rend_23L_data,
+        rend_23L_data_rendicontazione,
+        perfezionamento_data,
+        perfezionamento_tipo,
+        perfezionamento_notificationdate,
+        perfezionamento_stato,
+        perfezionamento_stato_dettagli,
+        flag_wi7_report_postalizzazioni_incomplete,
+        wi7_cluster,
+        criticita,
+        ente_attenzionato
+    FROM base_dedup
     ;
     """
 
@@ -539,8 +672,10 @@ def _scrivi_critici_su_send_dev(df_base):
     """Scrive nella tabella Iceberg i soli requestid critici."""
     logging.info(f"Scrittura in tabella {TARGET_TABLE} con createOrReplace()...")
 
-    df_critici = df_base.where("criticita = 'Critico'").selectExpr(
-        "requestid", "recapitista_unif AS fornitore"
+    df_critici = (
+        df_base.where("criticita = 'Critico'")
+        .selectExpr("requestid", "recapitista_unif AS fornitore")
+        .dropDuplicates(["requestid", "fornitore"])
     )
 
     n = df_critici.count()
