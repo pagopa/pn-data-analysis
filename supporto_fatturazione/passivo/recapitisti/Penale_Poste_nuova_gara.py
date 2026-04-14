@@ -33,7 +33,8 @@ df_filtrato = spark.sql("""
     WHEN COALESCE(i.recapitista_corretto, g.recapitista) = 'FSU' AND g.prodotto = 'RS' THEN 'FSU - RS'
     ELSE COALESCE(i.recapitista_corretto, g.recapitista)
  END AS recapitista,
-    COALESCE(i.lotto_corretto, g.lotto) AS lotto,
+    --COALESCE(i.lotto_corretto, g.lotto) AS lotto,
+     COALESCE(CAST(i.lotto_corretto AS STRING), g.lotto) AS lotto,
     g.codice_oggetto,
     g.costo_recapitista,
     affido_consolidatore_data,
@@ -43,6 +44,7 @@ df_filtrato = spark.sql("""
         WHEN accettazione_recapitista_CON018_data IS NULL THEN affido_recapitista_CON016_data + INTERVAL 1 DAY
         ELSE accettazione_recapitista_CON018_data
     END AS accettazione_recapitista_CON018_data,
+   
     affido_conservato_con020_data,
     materialita_pronta_con09a_data,
     scarto_consolidatore_stato,
@@ -69,7 +71,34 @@ df_filtrato = spark.sql("""
     causa_forza_maggiore_data,
     causa_forza_maggiore_data_rendicontazione,
     demat_23l_ar_data_rendicontazione,
-    demat_plico_data_rendicontazione
+    demat_plico_data_rendicontazione,
+    CASE
+            WHEN tentativo_recapito_data_rendicontazione IS NULL
+             AND messaingiacenza_recapito_data_rendicontazione IS NULL
+             AND certificazione_recapito_data_rendicontazione IS NULL
+             AND fine_recapito_data_rendicontazione IS NULL
+                THEN NULL
+            ELSE LEAST(
+                COALESCE(tentativo_recapito_data_rendicontazione, CAST('9999-12-31 00:00:00' AS TIMESTAMP)),
+                COALESCE(messaingiacenza_recapito_data_rendicontazione, CAST('9999-12-31 00:00:00' AS TIMESTAMP)),
+                COALESCE(certificazione_recapito_data_rendicontazione, CAST('9999-12-31 00:00:00' AS TIMESTAMP)),
+                COALESCE(fine_recapito_data_rendicontazione, CAST('9999-12-31 00:00:00' AS TIMESTAMP))
+            )
+        END AS prima_rendicontazione,
+    
+    
+    
+     CASE
+            WHEN tentativo_recapito_data_rendicontazione IS NULL
+             AND messaingiacenza_recapito_data_rendicontazione IS NULL
+             AND certificazione_recapito_data_rendicontazione IS NULL
+                THEN NULL
+            ELSE GREATEST(
+                COALESCE(tentativo_recapito_data_rendicontazione, CAST('1900-01-01 00:00:00' AS TIMESTAMP)),
+                COALESCE(messaingiacenza_recapito_data_rendicontazione, CAST('1900-01-01 00:00:00' AS TIMESTAMP)),
+                COALESCE(certificazione_recapito_data_rendicontazione, CAST('1900-01-01 00:00:00' AS TIMESTAMP))
+            )
+        END AS ultima_rendicontazione_senza_fine
 FROM send.gold_postalizzazione_analytics g 
 LEFT JOIN send_dev.temp_incident i ON (g.requestid = i.requestid)
 LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
@@ -131,30 +160,8 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
 """)
 #fix PN999 e PN998
 
-df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 
 
-
-
-
-
-
-######################################### Conteggio dei record
-
-record_count_filtrato_df = spark.sql("""
-SELECT 
-    lotto, 
-    prodotto, 
-    COUNT(*) AS total_records
-FROM 
-    gold_postalizzazione
-WHERE tentativo_recapito_data IS NOT NULL AND (accettazione_recapitista_con018_data IS NOT NULL OR affido_recapitista_con016_data IS NOT NULL)
-GROUP BY 
-    lotto, 
-    prodotto;
-""")
-
-######################################### Creazione del DataFrame con le festività
 
 festivita = [
     ('2023-01-01', 'Capodanno'),
@@ -193,8 +200,23 @@ festivita = [
     ('2025-11-01', 'Ognissanti'),
     ('2025-12-08', 'Immacolata Concezione'),
     ('2025-12-25', 'Natale'),
-    ('2025-12-26', 'Santo Stefano')
+    ('2025-12-26', 'Santo Stefano'),
+    ('2026-01-01', 'Capodanno'),
+    ('2026-01-06', 'Epifania'),
+    ('2026-04-05', 'Pasqua'),
+    ('2026-04-06', 'Lunedì dell\'Angelo'),
+    ('2026-04-25', 'Festa della Liberazione'),
+    ('2026-05-01', 'Festa dei Lavoratori'),
+    ('2026-06-02', 'Festa della Repubblica'),
+    ('2026-08-15', 'Ferragosto'),
+    ('2026-10-04', 'San Francesco d\'Assisi'),
+    ('2026-11-01', 'Tutti i Santi'),
+    ('2026-12-08', 'Immacolata Concezione'),
+    ('2026-12-25', 'Natale'),
+    ('2026-12-26', 'Santo Stefano')
+ 
 ]
+
 
 holiday_dates = {datetime.strptime(date, '%Y-%m-%d').date() for date, _ in festivita}
 
@@ -203,21 +225,6 @@ festivita_df = spark.createDataFrame(festivita, ["data", "descrizione"])
 festivita_df = festivita_df.withColumn("data", to_date(festivita_df["data"], "yyyy-MM-dd"))
 
 festivita_df.createOrReplaceTempView("FestivitaView")
-
-#festivita_df.show(10)
-
-######################################### CSV cap_zona -- fix: ci importiamo direttamenet la tabella di cap_area_provincia_regione
-"""
-schema = StructType([
-    StructField("CAP", StringType(), True), 
-    StructField("Zona", StringType(), True)
-])
-
-df_cap_zona = spark.read.csv("cap_zona.csv", header= True, sep= ";", schema = schema)
-df_cap_zona.createOrReplaceTempView("CAP_ZONA")
-"""
-
-######################################### Funzione custom per il calcolo dei giorni lavorativi
 
 def datediff_workdays(start_date, end_date, holidays_list):
     try:
@@ -243,6 +250,70 @@ def datediff_workdays(start_date, end_date, holidays_list):
         return None
 
 datediff_workdays_udf = udf(datediff_workdays, IntegerType())
+
+
+
+festivita = spark.table("FestivitaView")
+holidays = festivita.select(F.collect_list("data").alias("holidays")).collect()[0]["holidays"]
+
+
+
+
+cond1 = F.datediff(
+    F.col("fine_recapito_data_rendicontazione"),
+    F.col("ultima_rendicontazione_senza_fine")
+) > 60
+
+cond2 = F.datediff(
+    F.col("accettazione_recapitista_CON018_data"),
+    F.col("prima_rendicontazione")
+) > 60
+
+df_filtrato = df_filtrato.filter((~cond1) & (~cond2))
+
+
+
+df_filtrato.createOrReplaceTempView("gold_postalizzazione")
+
+
+
+
+
+
+######################################### Conteggio dei record
+
+record_count_filtrato_df = spark.sql("""
+SELECT 
+    lotto, 
+    prodotto, 
+    COUNT(*) AS total_records
+FROM 
+    gold_postalizzazione
+WHERE tentativo_recapito_data IS NOT NULL AND (accettazione_recapitista_con018_data IS NOT NULL OR affido_recapitista_con016_data IS NOT NULL)
+GROUP BY 
+    lotto, 
+    prodotto;
+""")
+
+######################################### Creazione del DataFrame con le festività
+
+
+#festivita_df.show(10)
+
+######################################### CSV cap_zona -- fix: ci importiamo direttamenet la tabella di cap_area_provincia_regione
+"""
+schema = StructType([
+    StructField("CAP", StringType(), True), 
+    StructField("Zona", StringType(), True)
+])
+
+df_cap_zona = spark.read.csv("cap_zona.csv", header= True, sep= ";", schema = schema)
+df_cap_zona.createOrReplaceTempView("CAP_ZONA")
+"""
+
+######################################### Funzione custom per il calcolo dei giorni lavorativi
+
+
 
 
 
@@ -284,8 +355,7 @@ def datediff_workdays_rend(start_date, end_date):
 datediff_workdays_rend_udf = udf(datediff_workdays_rend, IntegerType())
 ########################################## Inizio prima query di dettaglio
 
-festivita = spark.table("FestivitaView")
-holidays = festivita.select(F.collect_list("data").alias("holidays")).collect()[0]["holidays"]
+
 
 reportsla = spark.table("gold_postalizzazione")
 #cap_zona = spark.table("CAP_ZONA")
@@ -783,10 +853,10 @@ calcolo_penale_recapito = report_sla_modificato.withColumn(
                     # altrimenti se ritardo > 60gg --> penale = (costo recapitista/100)*2 --> applico il tetto massimo
                     
                     F.when(
-                        F.col("ritardo_recapito") < 60,
-                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 40), 2)
+                        F.col("ritardo_recapito") < 20,
+                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 20), 2)
                     ).when(
-                        F.col("ritardo_recapito") >= 60,
+                        F.col("ritardo_recapito") >= 20,
                         F.round((F.col("costo_recapitista") / 100), 2)
                     ).otherwise(0) #quando rientro in questa casistica? 
                         
@@ -797,10 +867,10 @@ calcolo_penale_recapito = report_sla_modificato.withColumn(
                     # altrimenti se ritardo > 60gg --> penale = (costo recapitista/100)*2 --> applico il tetto massimo 
                     
                    F.when(
-                        F.col("ritardo_recapito") < 60,
-                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 40), 2)
+                        F.col("ritardo_recapito") < 20,
+                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 20), 2)
                     ).when(
-                        F.col("ritardo_recapito") >= 60,
+                        F.col("ritardo_recapito") >= 20,
                         F.round((F.col("costo_recapitista") / 100), 2)
                     ).otherwise(0) #quando rientro in questa casistica? 
             ).otherwise(0)

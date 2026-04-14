@@ -34,7 +34,8 @@ df_filtrato = spark.sql("""
     WHEN COALESCE(i.recapitista_corretto, g.recapitista) = 'FSU' AND g.prodotto = 'RS' THEN 'FSU - RS'
     ELSE COALESCE(i.recapitista_corretto, g.recapitista)
  END AS recapitista,
-    COALESCE(i.lotto_corretto, g.lotto) AS lotto,
+   -- COALESCE(i.lotto_corretto, g.lotto) AS lotto,
+   COALESCE(CAST(i.lotto_corretto AS STRING), g.lotto) AS lotto,
     g.codice_oggetto,
     g.costo_recapitista,
     affido_consolidatore_data,
@@ -70,7 +71,34 @@ df_filtrato = spark.sql("""
     causa_forza_maggiore_data,
     causa_forza_maggiore_data_rendicontazione,
     demat_23l_ar_data_rendicontazione,
-    demat_plico_data_rendicontazione
+    demat_plico_data_rendicontazione,
+     CASE
+            WHEN tentativo_recapito_data_rendicontazione IS NULL
+             AND messaingiacenza_recapito_data_rendicontazione IS NULL
+             AND certificazione_recapito_data_rendicontazione IS NULL
+             AND fine_recapito_data_rendicontazione IS NULL
+                THEN NULL
+            ELSE LEAST(
+                COALESCE(tentativo_recapito_data_rendicontazione, CAST('9999-12-31 00:00:00' AS TIMESTAMP)),
+                COALESCE(messaingiacenza_recapito_data_rendicontazione, CAST('9999-12-31 00:00:00' AS TIMESTAMP)),
+                COALESCE(certificazione_recapito_data_rendicontazione, CAST('9999-12-31 00:00:00' AS TIMESTAMP)),
+                COALESCE(fine_recapito_data_rendicontazione, CAST('9999-12-31 00:00:00' AS TIMESTAMP))
+            )
+        END AS prima_rendicontazione,
+    
+    
+    
+     CASE
+            WHEN tentativo_recapito_data_rendicontazione IS NULL
+             AND messaingiacenza_recapito_data_rendicontazione IS NULL
+             AND certificazione_recapito_data_rendicontazione IS NULL
+                THEN NULL
+            ELSE GREATEST(
+                COALESCE(tentativo_recapito_data_rendicontazione, CAST('1900-01-01 00:00:00' AS TIMESTAMP)),
+                COALESCE(messaingiacenza_recapito_data_rendicontazione, CAST('1900-01-01 00:00:00' AS TIMESTAMP)),
+                COALESCE(certificazione_recapito_data_rendicontazione, CAST('1900-01-01 00:00:00' AS TIMESTAMP))
+            )
+        END AS ultima_rendicontazione_senza_fine
 FROM send.gold_postalizzazione_analytics g 
 LEFT JOIN send_dev.temp_incident i ON (g.requestid = i.requestid)
 LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
@@ -114,7 +142,7 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
   --- Impostare il numero del trimestre
   AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 4
   --- Impostare l'anno
-  AND YEAR(fine_recapito_data_rendicontazione) = 2024
+  AND YEAR(fine_recapito_data_rendicontazione) = 2025
   AND  g.requestid NOT IN (
           SELECT requestid_computed
           FROM send.silver_postalizzazione_denormalized
@@ -122,6 +150,20 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
       )
 """)
 #fix PN999 e PN998
+
+cond1 = F.datediff(
+    F.col("fine_recapito_data_rendicontazione"),
+    F.col("ultima_rendicontazione_senza_fine")
+) > 60
+
+cond2 = F.datediff(
+    F.col("accettazione_recapitista_CON018_data"),
+    F.col("prima_rendicontazione")
+) > 60
+
+df_filtrato = df_filtrato.filter((~cond1) & (~cond2))
+
+
 
 df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 
@@ -730,10 +772,10 @@ calcolo_penale_recapito = report_sla_modificato.withColumn(
                     # altrimenti se ritardo > 60gg --> penale = (costo recapitista/100)*2 --> applico il tetto massimo
                     
                     F.when(
-                        F.col("ritardo_recapito") < 60,
-                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 40), 2)
+                        F.col("ritardo_recapito") < 20,
+                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 20), 2)
                     ).when(
-                        F.col("ritardo_recapito") >= 60,
+                        F.col("ritardo_recapito") >= 20,
                         F.round((F.col("costo_recapitista") / 100), 2)
                     ).otherwise(0) #quando rientro in questa casistica? 
                         
@@ -744,10 +786,10 @@ calcolo_penale_recapito = report_sla_modificato.withColumn(
                     # altrimenti se ritardo > 60gg --> penale = (costo recapitista/100)*2 --> applico il tetto massimo 
                     
                    F.when(
-                        F.col("ritardo_recapito") < 60,
-                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 40), 2)
+                        F.col("ritardo_recapito") < 20,
+                        F.round((F.col("costo_recapitista") / 100) * (F.col("ritardo_recapito") / 20), 2)
                     ).when(
-                        F.col("ritardo_recapito") >= 60,
+                        F.col("ritardo_recapito") >= 20,
                         F.round((F.col("costo_recapitista") / 100), 2)
                     ).otherwise(0) #quando rientro in questa casistica? 
             ).otherwise(0)
@@ -1348,13 +1390,13 @@ calcolo_riepilogo_globale = calcolo_penale_rendicontazione.groupBy(
 
     # RECAPITO
     
-    F.sum(F.when(F.col("corrispettivo_penale_50_50_doppiocostoRec_recapito") > 0, 1).otherwise(0)).alias("Oggetti_con_violazione_SLA_Recapito"),
+    F.sum(F.when(F.col("corrispettivo_50_50_costoRec_recapito") > 0, 1).otherwise(0)).alias("Oggetti_con_violazione_SLA_Recapito"),
   
     F.round(F.sum(F.col("corrispettivo_50_50_costoRec_recapito")),2).alias("Penale_Recapito_50_50_costo"),
     
     # RENDICONTAZIONE
     
-    F.sum(F.when(F.col("corrispettivo_penale_50_50_doppiocostoRec_rendicontazione") > 0, 1).otherwise(0)).alias("Oggetti_con_violazione_SLA_Rendicontazione"),
+    F.sum(F.when(F.col("corrispettivo_penale_50_50_costoRec_rendicontazione") > 0, 1).otherwise(0)).alias("Oggetti_con_violazione_SLA_Rendicontazione"),
      F.round(F.sum(F.col("corrispettivo_penale_50_50_costoRec_rendicontazione")),2).alias("Penale_Rendicontazione_50_50_costo"),
      F.round(
         F.sum(F.col("corrispettivo_50_50_costoRec_recapito")) + F.sum(F.col("corrispettivo_penale_50_50_costoRec_rendicontazione")),
