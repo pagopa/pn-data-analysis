@@ -1,18 +1,23 @@
-from pyspark.sql import SparkSession
-from pdnd_google_utils import Sheet
-import pandas as pd
 import json
-import os
 import logging
+import os
 from datetime import datetime
 
+import numpy as np
+import pandas as pd
+from pdnd_google_utils import Sheet
+from pyspark.sql import SparkSession
+
 # ---------------- CONFIGURAZIONE BASE ----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
-SHEET_ID = "1yvTyUH7aEXqWpeoCtP5d5gqy5atvTfS60McZPRQThQQ"
+SHEET_ID = "1dBO5qm42-fFgkcUOdsuXZaNkdNWDC3qOD4ewcbp241Q"
 
 # ---------------- FUNZIONI ----------------
+
 
 def load_google_credentials(secret_path: str) -> dict:
     """Legge i file di credenziali e li restituisce come dizionario."""
@@ -25,42 +30,65 @@ def load_google_credentials(secret_path: str) -> dict:
     return creds
 
 
+def spark_to_df_per_gsheet(df_spark, missing: str = "-") -> pd.DataFrame:
+    """
+    Converte un DataFrame Spark in un DataFrame Pandas pronto per Google Sheets:
+      - materializza sul driver (toPandas)
+      - normalizza inf/-inf → NaN
+      - sostituisce NaN con placeholder
+      - converte tutto a stringa
+    """
+    if df_spark is None:
+        return pd.DataFrame()
 
-def run_query(spark: SparkSession, senderpaid: str) -> dict:
+    df = df_spark.toPandas()
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.fillna(missing)
+    df = df.astype(str)
+    return df
+
+
+def run_query(
+    spark: SparkSession, senderpaid: str, start_date: str, end_date: str
+) -> dict:
     """Esegue la query su Spark e restituisce un DataFrame Pandas."""
     logging.info("Esecuzione query Relazione Servizio Enti...")
 
     query2_totale_notifiche = f"""
-        SELECT 
+        SELECT
             YEAR(sentat) AS anno,
             type_notif,
             COUNT(*) AS numero_notifiche
         FROM send.gold_notification_analytics
-        WHERE senderpaid = '{senderpaid}'  
+        WHERE senderpaid = '{senderpaid}'
             --AND type_notif IS NOT NULL   -- da capire se vanno escluse quelle con type notif NULL oppure anche le MULTI
             --AND tms_cancelled IS NULL    -- da capire se vanno escluse quelle cancellate
             AND type_notif IS NOT NULL
+            AND CAST(sentat AS DATE) >= DATE('{start_date}')
+            AND CAST(sentat AS DATE) <= DATE('{end_date}')
             --AND YEAR(sentat) IN (2024, 2025)
-        GROUP BY YEAR(sentat), 
+        GROUP BY YEAR(sentat),
                 type_notif
         ORDER BY anno ASC, type_notif DESC"""
-    
+
     query3_tempisticheperfezionamento = f"""
          WITH base AS (
-            SELECT  
+            SELECT
                 iun,
                 cast(sentat AS timestamp) AS sentat,
                 type_notif,
                 -- Calcolo tms_perfezionamento
-                CASE 
+                CASE
                     WHEN tms_viewed IS NULL THEN cast(tms_effective_date AS timestamp)
                     WHEN tms_effective_date IS NULL THEN cast(tms_viewed AS timestamp)
                     WHEN tms_viewed < tms_effective_date THEN cast(tms_viewed AS timestamp)
                     ELSE cast(tms_effective_date AS timestamp)
                 END AS tms_perfezionamento
             FROM send.gold_notification_analytics
-            WHERE senderpaid =  '{senderpaid}'  
+            WHERE senderpaid =  '{senderpaid}'
             AND (tms_viewed IS NOT NULL OR tms_effective_date IS NOT NULL)
+            AND CAST(sentat AS DATE) >= DATE('{start_date}')
+            AND CAST(sentat AS DATE) <= DATE('{end_date}')
         ),
         diff AS (
             SELECT
@@ -70,7 +98,7 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                 tms_perfezionamento,
                 -- Differenza in giorni (equivalente del unix_timestamp / 86400)
                 ROUND(
-                    (unix_timestamp(tms_perfezionamento) - unix_timestamp(sentat)) 
+                    (unix_timestamp(tms_perfezionamento) - unix_timestamp(sentat))
                     / (3600 * 24),
                 2) AS diff_sentat_perfezionamento,
                 YEAR(sentat) AS anno_deposito
@@ -103,7 +131,9 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                 send.silver_timeline
             WHERE
                 category = 'SEND_COURTESY_MESSAGE'
-                AND paid = '{senderpaid}'  
+                AND paid = '{senderpaid}'
+                AND CAST(notificationsentat AS DATE) >= DATE('{start_date}')
+                AND CAST(notificationsentat AS DATE) <= DATE('{end_date}')
         ),
         perfezionate AS (
             SELECT DISTINCT
@@ -113,7 +143,9 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                 send.silver_timeline
             WHERE
                 category IN ('NOTIFICATION_VIEWED', 'REFINEMENT')
-                AND paid = '{senderpaid}'  
+                AND paid = '{senderpaid}'
+                AND CAST(notificationsentat AS DATE) >= DATE('{start_date}')
+                AND CAST(notificationsentat AS DATE) <= DATE('{end_date}')
         ),
         prepared AS (
             SELECT DISTINCT
@@ -123,7 +155,9 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                 send.silver_timeline
             WHERE
                 category = 'PREPARE_ANALOG_DOMICILE'
-                AND paid = '{senderpaid}'  
+                AND paid = '{senderpaid}'
+                AND CAST(notificationsentat AS DATE) >= DATE('{start_date}')
+                AND CAST(notificationsentat AS DATE) <= DATE('{end_date}')
         ),
         digital AS (
             SELECT DISTINCT
@@ -133,7 +167,9 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                 send.silver_timeline
             WHERE
                 category = 'SEND_DIGITAL_FEEDBACK'
-                AND paid = '{senderpaid}'  
+                AND paid = '{senderpaid}'
+                AND CAST(notificationsentat AS DATE) >= DATE('{start_date}')
+                AND CAST(notificationsentat AS DATE) <= DATE('{end_date}')
         ),
         joined AS (
             SELECT
@@ -191,7 +227,9 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                     'NOTIFICATION_VIEWED',
                     'REFINEMENT'
                 )
-                AND paid = '{senderpaid}'  
+                AND paid = '{senderpaid}'
+                AND CAST(notificationsentat AS DATE) >= DATE('{start_date}')
+                AND CAST(notificationsentat AS DATE) <= DATE('{end_date}')
             GROUP BY
                 MONTH (notificationsentat),
                 YEAR (notificationsentat)
@@ -223,7 +261,9 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                 send.silver_timeline
             WHERE
                 category = 'SEND_DIGITAL_FEEDBACK'
-                AND paid = '{senderpaid}'  
+                AND paid = '{senderpaid}'
+                AND CAST(notificationsentat AS DATE) >= DATE('{start_date}')
+                AND CAST(notificationsentat AS DATE) <= DATE('{end_date}')
             GROUP BY
                 MONTH (notificationsentat),
                 YEAR (notificationsentat)
@@ -237,7 +277,9 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                 send.gold_notification_analytics
             WHERE
                 type_notif IS NOT NULL
-                AND senderpaid = '{senderpaid}'  
+                AND senderpaid = '{senderpaid}'
+                AND CAST(sentat AS DATE) >= DATE('{start_date}')
+                AND CAST(sentat AS DATE) <= DATE('{end_date}')
             GROUP BY
                 MONTH (sentat),
                 YEAR (sentat)
@@ -329,21 +371,21 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
             f.anno_sentat ASC,
             f.mese_sentat ASC"""
 
-    query5_pagate_ai_cittadini = f""" 
+    query5_pagate_ai_cittadini = f"""
         WITH postalizzazione_dedup AS (
             SELECT DISTINCT iun, prezzo_ente
             FROM send.gold_postalizzazione_analytics
             WHERE pcretry_rank = 1
-            -- pcretry_rank = 1 garantisce 1 sola riga per iun  
+            -- pcretry_rank = 1 garantisce 1 sola riga per iun
         ),base AS (
-            SELECT 
+            SELECT
                     b.iun,
                     b.sentat,
                     b.type_notif,
                     b.tms_date_payment,
                     b.tms_viewed,
                     b.tms_effective_date,
-                    CASE 
+                    CASE
                         WHEN b.tms_viewed IS NULL THEN b.tms_effective_date
                         WHEN b.tms_effective_date IS NULL THEN b.tms_viewed
                         WHEN b.tms_viewed < b.tms_effective_date THEN b.tms_viewed
@@ -353,16 +395,18 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                 FROM send.gold_notification_analytics b
                 LEFT JOIN postalizzazione_dedup c
                 ON b.iun = c.iun
-                WHERE b.senderpaid = '{senderpaid}' 
+                WHERE b.senderpaid = '{senderpaid}'
                 AND b.type_notif IS NOT NULL
+                AND CAST(b.sentat AS DATE) >= DATE('{start_date}')
+                AND CAST(b.sentat AS DATE) <= DATE('{end_date}')
                 --AND c.pcretry_rank = 1
-        )      
-        SELECT 
+        )
+        SELECT
                 YEAR(sentat) AS anno,
                 type_notif AS `tipo notifica`,
                 --COUNT(*) AS numero_notifiche,
                 COUNT(CASE WHEN tms_date_payment IS NOT NULL THEN 1 END) AS `Totale notifiche pagate`, -- COLONNA C
-                COUNT(CASE WHEN tms_perfezionamento IS NOT NULL THEN 1 END) AS `Totale notifiche perfezionate`, -- COLONNA D 
+                COUNT(CASE WHEN tms_perfezionamento IS NOT NULL THEN 1 END) AS `Totale notifiche perfezionate`, -- COLONNA D
                 COUNT(CASE WHEN tms_perfezionamento IS NOT NULL AND tms_date_payment IS NOT NULL THEN 1 END) AS `Totale notifiche pagate e perfezionate`, -- COLONNA E
                 COUNT(CASE WHEN tms_perfezionamento IS NULL AND tms_date_payment IS NOT NULL THEN 1 END) AS `Totale notifiche pagate no perfezionate`, -- COLONNA F
                 -- percentuale su pagate e perfezionate COLONNA C/D
@@ -379,39 +423,40 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
                     AS DECIMAL(18,2)
                 ) AS `Corrispettivo digitale pagate e perfezionate`,  -- COLONNA H - impostare nel google Sheet il formato euro nella colonna
                 -- Corrispettivo pagate e perfezionate
-                SUM(CASE WHEN tms_date_payment IS NOT NULL 
-                        AND tms_perfezionamento IS NOT NULL 
+                SUM(CASE WHEN tms_date_payment IS NOT NULL
+                        AND tms_perfezionamento IS NOT NULL
                     THEN prezzo_ente END
                 ) AS `Corrispettivo pagate e perfezionate eurocent (ANALOG)`, -- COLONNA I - impostare nel google Sheet il formato euro nella colonna
                 -- Corrispettivo digitale pagate e non perfezionate
                 CAST(
                     COUNT(CASE WHEN tms_perfezionamento IS NULL  AND tms_date_payment IS NOT NULL THEN 1 END)
                     AS DECIMAL(18,2)
-                ) AS `Corrispettivo digitale pagate e non perfezionate`, --COLONNA J - impostare nel google Sheet il formato euro nella colonna 
+                ) AS `Corrispettivo digitale pagate e non perfezionate`, --COLONNA J - impostare nel google Sheet il formato euro nella colonna
                 -- Corrispettivo pagate e non perfezionate
-                SUM(CASE WHEN tms_date_payment IS NOT NULL 
-                        AND tms_perfezionamento IS NULL 
+                SUM(CASE WHEN tms_date_payment IS NOT NULL
+                        AND tms_perfezionamento IS NULL
                     THEN prezzo_ente END
                 ) AS `Corrispettivo pagate non perfezionate eurocent (ANALOG)` -- COLONNA K - impostare nel google Sheet il formato euro nella colonna
             FROM base
-            WHERE YEAR(sentat) IN (2024, 2025)
-            GROUP BY YEAR(sentat), 
+            GROUP BY YEAR(sentat),
                     type_notif
             ORDER BY anno ASC, type_notif DESC"""
 
-    query6_tempi_medi_pagamento = f""" 
+    query6_tempi_medi_pagamento = f"""
         WITH base AS (
-            SELECT  
+            SELECT
                 b.iun,
                 b.sentat,
                 b.type_notif,
                 b.tms_date_payment,
                 DATEDIFF(b.tms_date_payment, b.sentat) AS giorni_pagamento
             FROM send.gold_notification_analytics b
-            --LEFT JOIN send.gold_postalizzazione_analytics c 
+            --LEFT JOIN send.gold_postalizzazione_analytics c
             --  ON b.iun = c.iun
             WHERE b.senderpaid = '{senderpaid}'
             AND b.type_notif IS NOT NULL
+            AND CAST(b.sentat AS DATE) >= DATE('{start_date}')
+            AND CAST(b.sentat AS DATE) <= DATE('{end_date}')
             --AND c.pcretry_rank = 1
             AND b.tms_date_payment IS NOT NULL
         )
@@ -442,16 +487,26 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
             ROUND(SUM(CASE WHEN giorni_pagamento BETWEEN 71 AND 80 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS perc_71_80gg,
             ROUND(SUM(CASE WHEN giorni_pagamento > 80 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS perc_oltre_80gg
         FROM base
-        GROUP BY YEAR(sentat), type_notif 
+        GROUP BY YEAR(sentat), type_notif
         ORDER BY anno """
 
-     # --- Esecuzione di tutte le query e conversione in Pandas
+    # --- Esecuzione di tutte le query e conversione in Pandas
     results = {}
-    results["2. Totale notifiche"] = spark.sql(query2_totale_notifiche).toPandas()
-    results["3. Tempistiche di perfezionamento"] = spark.sql(query3_tempisticheperfezionamento).toPandas()
-    results["4. % conversione digitale"] = spark.sql(query4_perc_conversione_digitale).toPandas()
-    results["5. Pagate dai cittadini"] = spark.sql(query5_pagate_ai_cittadini).toPandas()
-    results["6. Tempi medi pagamento"] = spark.sql(query6_tempi_medi_pagamento).toPandas()
+    results["2. Totale notifiche"] = spark_to_df_per_gsheet(
+        spark.sql(query2_totale_notifiche)
+    )
+    results["3. Tempistiche di perfezionamento"] = spark_to_df_per_gsheet(
+        spark.sql(query3_tempisticheperfezionamento)
+    )
+    results["4. % conversione digitale"] = spark_to_df_per_gsheet(
+        spark.sql(query4_perc_conversione_digitale)
+    )
+    results["5. Pagate dai cittadini"] = spark_to_df_per_gsheet(
+        spark.sql(query5_pagate_ai_cittadini)
+    )
+    results["6. Tempi medi pagamento"] = spark_to_df_per_gsheet(
+        spark.sql(query6_tempi_medi_pagamento)
+    )
 
     logging.info("Tutte le query sono state trasformate in Pandas DataFrame")
 
@@ -462,34 +517,46 @@ def run_query(spark: SparkSession, senderpaid: str) -> dict:
 def get_last_update_date(spark: SparkSession) -> str:
     """Estrae la data più recente (MAX(requesttimestamp)) dal dataset."""
     logging.info("Estrazione data ultimo aggiornamento...")
-    
-    max_date_df = spark.sql("SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics") 
-    max_date = max_date_df.collect()[0]["max_ts"] 
 
-    if isinstance(max_date, datetime): 
-        return max_date.strftime("%Y-%m-%d %H:%M:%S") 
+    max_date_df = spark.sql(
+        "SELECT MAX(requesttimestamp) AS max_ts FROM send.gold_postalizzazione_analytics"
+    )
+    max_date = max_date_df.collect()[0]["max_ts"]
+
+    if isinstance(max_date, datetime):
+        return max_date.strftime("%Y-%m-%d %H:%M:%S")
     return str(max_date)
 
 
 def get_sender_denomination(spark: SparkSession, senderpaid: str) -> str:
     """
-    Estrae la senderDenomination (description) da selfcare.gold_contracts dato un senderpaid.
+    Estrae la senderDenomination da selfcare.gold_contracts dato un senderpaid.
     Gestisce errori Spark/Iceberg senza far crashare lo script.
     """
     logging.info(f"[SenderDenomination] Ricerca per senderpaid={senderpaid}...")
 
-    query1 = f"""
-        SELECT description
-        FROM selfcare.gold_contracts
-        WHERE internalistitutionid = '{senderpaid}'
-        LIMIT 1
+    query = f"""
+        SELECT senderdenomination AS description
+        FROM (
+            SELECT
+                internalistitutionid,
+                CASE
+                    WHEN subunittype IS NOT NULL
+                        THEN CONCAT(rootparent_description, ' - ', description)
+                    ELSE description
+                END AS senderdenomination,
+                ROW_NUMBER() OVER (
+                    PARTITION BY internalistitutionid
+                    ORDER BY updatedat DESC
+                ) AS rn
+            FROM selfcare.gold_contracts
+            WHERE product = 'prod-pn'
+              AND state = 'ACTIVE'
+              AND internalistitutionid = '{senderpaid}'
+              AND internalistitutionid IS NOT NULL
+        ) t
+        WHERE rn = 1
     """
-    query = f""" SELECT DISTINCT 
-                    internalistitutionid,
-                    CONCAT_WS(' - ', institution.rootParent.description, institution.description) AS description
-                FROM selfcare.silver_contracts e
-            WHERE internalistitutionid = '{senderpaid}'
-            LIMIT 1"""
 
     try:
         df = spark.sql(query)
@@ -500,17 +567,14 @@ def get_sender_denomination(spark: SparkSession, senderpaid: str) -> str:
             f"[SenderDenomination] Errore durante la query su selfcare.gold_contracts "
             f"per senderpaid={senderpaid}: {e}"
         )
-        # evitando crash del job
         return "N/D (errore lettura tabella)"
 
-    # se la query è andata ma non ha trovato nulla
     if not rows:
         logging.warning(
             f"[SenderDenomination] Nessuna description trovata per senderpaid={senderpaid}."
         )
         return "N/D (non trovato)"
 
-    #description = rows[0].get("description")
     description = rows[0]["description"]
 
     if description is None:
@@ -526,24 +590,29 @@ def export_to_sheets(df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: s
     """Esporta i dati su Google Sheet."""
     logging.info(f"Scrittura su Google Sheet: {sheet_name}")
     df = df.astype(str)
-    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode="key")
     sheet.upload(sheet_name, df)
     logging.info("Scrittura completata.")
 
 
 # ---------------- MAIN SCRIPT ----------------
 
+
 def main():
     logging.info("Inizializzazione SparkSession...")
-    spark = SparkSession.builder.appName("SSDA-438 Relazione Servizio Enti").getOrCreate()
+    spark = SparkSession.builder.appName(
+        "SSDA-438 Relazione Servizio Enti"
+    ).getOrCreate()
 
     # Caricamento credenziali Google
     creds = load_google_credentials(GOOGLE_SECRET_PATH)
-    sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode='key')
+    sheet = Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode="key")
 
-    
+    #
     # Lettura senderpaid da sheet: info_senderpaid
     df_info = sheet.download("info_senderpaid")
+    df_info = df_info.reset_index(drop=True)
+
     # Debug
     print("DataFrame info_senderpaid:")
     print(df_info)
@@ -551,19 +620,32 @@ def main():
 
     # Controllo che esista almeno una riga
     if df_info.shape[0] < 1:
-        raise ValueError("Lo sheet 'info_senderpaid' non contiene un senderpaid valido.")
+        raise ValueError(
+            "Lo sheet 'info_senderpaid' non contiene un senderpaid valido."
+        )
 
-    # Lettura del valore in A2 → prima riga dati = iloc[0]
-    senderpaid = str(df_info.iloc[0, 0]).strip()
+    # Lettura dei valori dalla prima riga dati
+    senderpaid = str(df_info.loc[0, "senderpaid"]).strip()
+    start_date = str(df_info.loc[0, "start_date"]).strip()
+    end_date = str(df_info.loc[0, "end_date"]).strip()
 
-    if not senderpaid:
-        raise ValueError("La cella A2 (senderpaid) è vuota o non valida.")
-    
+    if not senderpaid or senderpaid.lower() == "nan":
+        raise ValueError("La colonna 'senderpaid' è vuota o non valida.")
+
+    if not start_date or start_date.lower() == "nan":
+        raise ValueError("La colonna 'start_date' è vuota o non valida.")
+
+    if not end_date or end_date.lower() == "nan":
+        raise ValueError("La colonna 'end_date' è vuota o non valida.")
 
     logging.info(f"Senderpaid letto: {senderpaid}")
+    logging.info(f"Start date letta: {start_date}")
+    logging.info(f"End date letta: {end_date}")
 
     # Esecuzione query
-    dfs = run_query(spark, senderpaid=senderpaid)
+    dfs = run_query(
+        spark, senderpaid=senderpaid, start_date=start_date, end_date=end_date
+    )
 
     # Scrittura ogni query su sheet dedicato
     for query_name, df in dfs.items():
@@ -584,17 +666,13 @@ def main():
 
     print("SenderDenomination:", senderdenomination)
 
-    # colonne attese: A senderpaid | B senderdenomination | C ultimo update | D job time
-    # aggiorniamo solo C e D sulla riga del senderpaid (riga 1 indice base zero)
-
-    df_info.loc[1, "senderdenomination"] = senderdenomination
-    
-    df_info.loc[1, "Ultimo aggiornamento dati (MAX requesttimestamp)"] = max_date_str
-    df_info.loc[1, "Data esecuzione script (UTC)"] = job_time
+    # aggiorniamo la stessa riga da cui abbiamo letto gli input
+    df_info.loc[0, "senderdenomination"] = senderdenomination
+    df_info.loc[0, "Ultimo aggiornamento dati (MAX requesttimestamp)"] = max_date_str
+    df_info.loc[0, "Data esecuzione script (UTC)"] = job_time
 
     # Scrittura sul foglio intero senza sovrascrivere il senderpaid
     sheet.upload("info_senderpaid", df_info)
-
 
     # Chiusura sessione
     spark.stop()
