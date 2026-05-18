@@ -15,9 +15,8 @@ from pyspark.sql.window import Window
 spark = SparkSession.builder.getOrCreate()
 
 # fix: codice oggetto corretto per i recapitisti
-df_filtrato = spark.sql(
-    """
-   SELECT
+df_filtrato = spark.sql("""
+   SELECT DISTINCT
     g.iun,
     g.requestid,
     g.requesttimestamp,
@@ -78,9 +77,9 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
   AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
   AND (
       -- Calcolare il trimestre da accettazione_recapitista_con018_data se non è NULL
-      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 1)
+      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
       -- Se con018 è NULL, calcolare il trimestre su affido_recapitista_con016_data, se non è NULL
-      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 1)
+      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
   )
   AND (
       -- Anno da accettazione_recapitista_con018_data se non è NULL, altrimenti da affido_recapitista_con016_data
@@ -89,17 +88,31 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
           ELSE accettazione_recapitista_con018_data
       END) = 2024
   )
-  AND  requestid NOT IN (
+  AND  g.requestid NOT IN (
           SELECT requestid_computed
           FROM send.silver_postalizzazione_denormalized
           WHERE statusrequest IN ('PN999', 'PN998')
       )
 
+""")
+
+####inserire lista
+# fix PN999 e PN998
 """
+lista_pn999 = (
+    spark.read.option("header", True)
+    .option("sep", ";")
+    .csv("Lista_pn999_Poste.csv")
+    .select(col("requestid").alias("requestid"))
 )
 
-# fix PN999 e PN998
+lista_esclusione = [row["requestid"] for row in lista_pn999.collect()]
 
+df_filtrato = df_filtrato.filter(
+    ~df_filtrato.requestid.isin(lista_esclusione)
+)
+
+"""
 df_filtrato = df_filtrato.filter(
     (F.col("causa_forza_maggiore_data_rendicontazione").isNull())
     | (
@@ -112,20 +125,18 @@ df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 
 ######################################### Conteggio dei record
 
-record_count_filtrato_df = spark.sql(
-    """
-SELECT
-    lotto,
-    prodotto,
-    COUNT(*) AS total_records
-FROM
-    gold_postalizzazione
-WHERE tentativo_recapito_data IS NOT NULL
-GROUP BY
-    lotto,
-    prodotto;
-"""
-)
+record_count_filtrato_df = spark.sql("""
+    SELECT
+        lotto,
+        prodotto,
+        COUNT(*) AS total_records
+    FROM
+        gold_postalizzazione
+    WHERE tentativo_recapito_data IS NOT NULL
+    GROUP BY
+        lotto,
+        prodotto;
+    """)
 
 ######################################### Creazione del DataFrame con le festività
 
@@ -151,6 +162,7 @@ festivita = [
     ("2024-06-02", "Festa della Repubblica"),
     ("2024-08-15", "Ferragosto"),
     ("2024-11-01", "Tutti i Santi"),
+    ("2024-12-08", "Immacolata Concezione"),
     ("2024-12-25", "Natale"),
     ("2024-12-26", "Santo Stefano"),
     ("2025-01-01", "Capodanno"),
@@ -165,6 +177,19 @@ festivita = [
     ("2025-12-08", "Immacolata Concezione"),
     ("2025-12-25", "Natale"),
     ("2025-12-26", "Santo Stefano"),
+    ("2026-01-01", "Capodanno"),
+    ("2026-01-06", "Epifania"),
+    ("2026-04-05", "Pasqua"),
+    ("2026-04-06", "Lunedì dell'Angelo"),
+    ("2026-04-25", "Festa della Liberazione"),
+    ("2026-05-01", "Festa dei Lavoratori"),
+    ("2026-06-02", "Festa della Repubblica"),
+    ("2026-08-15", "Ferragosto"),
+    ("2026-10-04", "San Francesco d'Assisi"),
+    ("2026-11-01", "Tutti i Santi"),
+    ("2026-12-08", "Immacolata Concezione"),
+    ("2026-12-25", "Natale"),
+    ("2026-12-26", "Santo Stefano"),
 ]
 
 holiday_dates = {datetime.strptime(date, "%Y-%m-%d").date() for date, _ in festivita}
@@ -420,6 +445,26 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             & (
                 F.col("affido_recapitista_con016_data").between(
                     F.lit("2024-05-01"), F.lit("2024-07-31")
+                )
+            ),
+            50,
+        )
+        .when(
+            # Rilassamento lotto 16 dal 01/07/24 al 16/07/24 → 35 giorni
+            (F.col("lotto") == "16")
+            & (
+                F.col("affido_recapitista_con016_data").between(
+                    F.lit("2024-07-01"), F.lit("2024-07-16")
+                )
+            ),
+            35,
+        )
+        .when(
+            # Rilassamento lotto 16 dal 17/07/24 al 31/07/24 → 50 giorni
+            (F.col("lotto") == "16")
+            & (
+                F.col("affido_recapitista_con016_data").between(
+                    F.lit("2024-07-17"), F.lit("2024-07-31")
                 )
             ),
             50,
@@ -722,6 +767,26 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
                 50,
             )
             .when(
+                # Rilassamento lotto 16 dal 01/07/24 al 16/07/24 → 35 giorni
+                (F.col("lotto") == "16")
+                & (
+                    F.col("affido_recapitista_con016_data").between(
+                        F.lit("2024-07-01"), F.lit("2024-07-16")
+                    )
+                ),
+                35,
+            )
+            .when(
+                # Rilassamento lotto 16 dal 17/07/24 al 31/07/24 → 50 giorni
+                (F.col("lotto") == "16")
+                & (
+                    F.col("affido_recapitista_con016_data").between(
+                        F.lit("2024-07-17"), F.lit("2024-07-31")
+                    )
+                ),
+                50,
+            )
+            .when(
                 (F.col("lotto") == "30")
                 & (F.col("prodotto") == "AR")
                 & F.col("zona").cast("string").isin(["AM", "CP", "EU"]),
@@ -794,6 +859,26 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
             )
         ),
         # solo fino al 31 luglio
+        50,
+    )
+    .when(
+        # Rilassamento lotto 16 dal 01/07/24 al 16/07/24 → 35 giorni
+        (F.col("lotto") == "16")
+        & (
+            F.col("affido_recapitista_con016_data").between(
+                F.lit("2024-07-01"), F.lit("2024-07-16")
+            )
+        ),
+        35,
+    )
+    .when(
+        # Rilassamento lotto 16 dal 17/07/24 al 31/07/24 → 50 giorni
+        (F.col("lotto") == "16")
+        & (
+            F.col("affido_recapitista_con016_data").between(
+                F.lit("2024-07-17"), F.lit("2024-07-31")
+            )
+        ),
         50,
     )
     .when(
@@ -924,6 +1009,26 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
         & (
             F.col("affido_recapitista_con016_data").between(
                 F.lit("2024-05-01"), F.lit("2024-07-31")
+            )
+        ),
+        50,
+    )
+    .when(
+        # Rilassamento lotto 16 dal 01/07/24 al 16/07/24 → 35 giorni
+        (F.col("lotto") == "16")
+        & (
+            F.col("affido_recapitista_con016_data").between(
+                F.lit("2024-07-01"), F.lit("2024-07-16")
+            )
+        ),
+        35,
+    )
+    .when(
+        # Rilassamento lotto 16 dal 17/07/24 al 31/07/24 → 50 giorni
+        (F.col("lotto") == "16")
+        & (
+            F.col("affido_recapitista_con016_data").between(
+                F.lit("2024-07-17"), F.lit("2024-07-31")
             )
         ),
         50,
@@ -1315,7 +1420,11 @@ calcolo_penale = report_sla_modificato.withColumn(
     ),
 )
 
+window_spec = Window.orderBy(F.monotonically_increasing_id())
 
+calcolo_penale = calcolo_penale.withColumn(
+    "id_recapito", F.row_number().over(window_spec)
+)
 ######################################### Creazione della vista temporanea reportPenali
 calcolo_penale.createOrReplaceTempView("reportPenali")
 

@@ -19,9 +19,8 @@ spark = SparkSession.builder.getOrCreate()
 print("Inizio Configurazione...")
 
 
-df1 = spark.sql(
-    """
-                SELECT
+df1 = spark.sql("""
+                SELECT DISTINCT
                     g.iun,
                     g.requestid,
                     g.requesttimestamp,
@@ -82,8 +81,8 @@ df1 = spark.sql(
                             OR (demat_23l_ar_data_rendicontazione IS NULL AND demat_plico_data_rendicontazione IS NOT NULL)
                             OR  (demat_23l_ar_data_rendicontazione IS NOT NULL AND demat_plico_data_rendicontazione IS NULL) )
                     AND (
-                        (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 1)
-                        OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 1)
+                        (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
+                        OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
                     )
                     AND (
                         YEAR(CASE
@@ -91,19 +90,38 @@ df1 = spark.sql(
                             ELSE accettazione_recapitista_con018_data
                         END) = 2024
                     )
-                    AND  requestid NOT IN (
+                    AND  g.requestid NOT IN (
                         SELECT requestid_computed
                         FROM send.silver_postalizzazione_denormalized
                         WHERE statusrequest IN ('PN999', 'PN998')
                     );
-                    """
-)
+                    """)
 # fix PN999 e PN998
 
 print("Creo la temporary view ...")
 
-######################################################## Configurazione
+"""
+lista_pn999 = (
+    spark.read.option("header", True)
+    .option("sep", ";")
+    .csv("Lista_pn999_Poste.csv")
+    .select(col("requestid").alias("requestid"))
+)
 
+######################################################## Configurazione
+lista_esclusione = [row["requestid"] for row in lista_pn999.collect()]
+
+df1 = df1.filter(
+    ~df1.requestid.isin(lista_esclusione)
+)
+"""
+df1 = df1.filter(
+    (F.col("causa_forza_maggiore_data_rendicontazione").isNull())
+    | (
+        F.col("causa_forza_maggiore_data_rendicontazione").isNotNull()
+        & (F.col("requesttimestamp") < F.to_timestamp(F.lit("2026-01-01 00:00:00.000")))
+    )
+)
 
 df1 = df1.withColumn(
     "dematerializzazione_data_rendicontazione",
@@ -122,13 +140,6 @@ df1 = df1.withColumn(
     ),
 )
 
-df1 = df1.filter(
-    (F.col("causa_forza_maggiore_data_rendicontazione").isNull())
-    | (
-        F.col("causa_forza_maggiore_data_rendicontazione").isNotNull()
-        & (F.col("requesttimestamp") < F.to_timestamp(F.lit("2026-01-01 00:00:00.000")))
-    )
-)
 
 ######################################################## Inizio prima query
 
@@ -1442,6 +1453,10 @@ df1 = df1.withColumn(
     ).otherwise(None),
 )
 
+window_spec = Window.orderBy(F.monotonically_increasing_id())
+
+df1 = df1.withColumn("id_rendicontazione", F.row_number().over(window_spec))
+
 
 df1.createOrReplaceTempView("dettaglio")
 
@@ -1456,9 +1471,9 @@ spark.sql("""SELECT * FROM dettaglio""").writeTo(
 ######################################################## Inizio seconda query
 
 SailpostData = (
-    df1.filter(F.col("recapitista_unificato") == "RTI Sailpost-Snem")
+    df1.filter(F.col("recapitista") == "RTI Sailpost-Snem")
     .groupBy(
-        "recapitista_unificato",
+        "recapitista",
         F.year("accettazione_recapitista_con018_data").alias("anno"),
         (F.ceil(F.month("accettazione_recapitista_con018_data") / 3)).alias(
             "trimestre"
@@ -1498,9 +1513,9 @@ SailpostData = (
 )
 
 OtherRecapitistaData = (
-    df1.filter(F.col("recapitista_unificato") != "RTI Sailpost-Snem")
+    df1.filter(F.col("recapitista") != "RTI Sailpost-Snem")
     .groupBy(
-        "recapitista_unificato",
+        "recapitista",
         "lotto",
         "prodotto",
         F.year("accettazione_recapitista_con018_data").alias("anno"),
@@ -1541,7 +1556,7 @@ OtherRecapitistaData = (
 ######################################################## Calcolo delle Penali
 
 PenaleRendicontazioneSailpost = SailpostData.select(
-    "recapitista_unificato",
+    "recapitista",
     F.lit(None).alias("prodotto"),
     F.lit(None).alias("lotto"),
     "anno",
@@ -1654,7 +1669,7 @@ PenaleRendicontazioneSailpost = SailpostData.select(
 )
 
 PenaleRendicontazioneOther = OtherRecapitistaData.select(
-    "recapitista_unificato",
+    "recapitista",
     "prodotto",
     "lotto",
     "anno",
@@ -2019,7 +2034,7 @@ PenaleRendicontazione = PenaleRendicontazioneSailpost.union(PenaleRendicontazion
 
 ######################################################## Query Finale per l'estrazione aggregata
 final_result = PenaleRendicontazione.select(
-    F.col("recapitista_unificato").alias("Recapitista"),
+    F.col("recapitista").alias("Recapitista"),
     F.col("prodotto").alias("Prodotto"),
     F.col("lotto").alias("Lotto"),
     F.col("anno").alias("Anno"),
