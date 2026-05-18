@@ -14,8 +14,7 @@ from pyspark.sql.window import Window
 spark = SparkSession.builder.getOrCreate()
 
 # fix: codice oggetto corretto per i recapitisti
-df_filtrato = spark.sql(
-    """
+df_filtrato = spark.sql("""
    SELECT
     g.iun,
     g.requestid,
@@ -79,13 +78,8 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
   AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 2
   --- Impostare l'anno
   AND YEAR(fine_recapito_data_rendicontazione) = 2024
-  AND  requestid NOT IN (
-          SELECT requestid_computed
-          FROM send.silver_postalizzazione_denormalized
-          WHERE statusrequest IN ('PN999', 'PN998')
-      )
-"""
-)
+  AND  statusrequest NOT IN ('PN999', 'PN998')
+""")
 # fix PN999 e PN998
 df_filtrato = df_filtrato.filter(
     (F.col("causa_forza_maggiore_data_rendicontazione").isNull())
@@ -99,8 +93,7 @@ df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 
 ######################################### Conteggio dei record
 
-record_count_filtrato_df = spark.sql(
-    """
+record_count_filtrato_df = spark.sql("""
 SELECT
     recapitista,
     COUNT(*) AS total_records
@@ -108,8 +101,7 @@ FROM
     gold_postalizzazione
 WHERE tentativo_recapito_data IS NOT NULL AND (accettazione_recapitista_CON018_data IS NOT NULL OR affido_recapitista_CON016_data IS NOT NULL)
 GROUP BY recapitista
-"""
-)
+""")
 
 ######################################### Creazione del DataFrame con le festività
 

@@ -12,8 +12,7 @@ from pyspark.sql.types import IntegerType
 spark = SparkSession.builder.getOrCreate()
 
 # Read dataframe report sla
-df_filtrato = spark.sql(
-    """
+df_filtrato = spark.sql("""
     SELECT
     g.iun,
     g.requestid,
@@ -72,13 +71,8 @@ LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
     AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 3
     AND YEAR(fine_recapito_data_rendicontazione) = 2024
     AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('RTI Sailpost-Snem', 'POST & SERVICE')
-    AND  requestid NOT IN (
-          SELECT requestid_computed
-          FROM send.silver_postalizzazione_denormalized
-          WHERE statusrequest IN ('PN999', 'PN998')
-    )
-    """
-)
+    AND  statusrequest NOT IN ('PN999', 'PN998')
+    """)
 # fix PN999 e PN998
 df_filtrato = df_filtrato.filter(
     (F.col("causa_forza_maggiore_data_rendicontazione").isNull())

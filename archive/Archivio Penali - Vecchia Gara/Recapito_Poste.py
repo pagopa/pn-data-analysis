@@ -88,12 +88,7 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
           ELSE accettazione_recapitista_con018_data
       END) = 2024
   )
-  AND  g.requestid NOT IN (
-          SELECT requestid_computed
-          FROM send.silver_postalizzazione_denormalized
-          WHERE statusrequest IN ('PN999', 'PN998')
-      )
-
+  AND  g.statusrequest NOT IN ('PN999', 'PN998')
 """)
 
 ####inserire lista
