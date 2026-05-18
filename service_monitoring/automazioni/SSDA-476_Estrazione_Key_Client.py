@@ -310,7 +310,13 @@ def run_query(spark: SparkSession):
                 g.requesttimestamp
             ) AS affido_accettazione_rec_data
         FROM send.gold_postalizzazione_analytics g
+        LEFT ANTI JOIN (
+            SELECT DISTINCT requestid
+            FROM send_dev.wi7_poste_da_escludere
+            WHERE requestid IS NOT NULL
+        ) w ON g.requestid = w.requestid
         WHERE g.statusrequest NOT IN ('PN999', 'PN998')
+        AND g.prodotto NOT IN ('RIS', 'RIR')
         AND COALESCE(
                 LEAST(
                     g.accettazione_recapitista_con018_data,
