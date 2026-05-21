@@ -1311,8 +1311,8 @@ PenaleRendicontazioneSailpost = SailpostData.select(
         )
         - 0.021
         > 0,
-        F.greatest(
-            F.round(
+        F.round(
+            F.greatest(
                 (
                     (
                         F.col("somma_esiti_violazione_no_plico")
@@ -1322,11 +1322,11 @@ PenaleRendicontazioneSailpost = SailpostData.select(
                     )
                     - 0.021
                 )
-                * 1000,
-                0,
-            )
-            * F.lit(500),
-            F.lit(0),
+                * 1000
+                * F.lit(500),
+                F.lit(0),
+            ),
+            2,
         ),
     )
     .otherwise(0)
@@ -1340,8 +1340,8 @@ PenaleRendicontazioneSailpost = SailpostData.select(
         )
         - 0.021
         > 0,
-        F.greatest(
-            F.round(
+        F.round(
+            F.greatest(
                 (
                     (
                         F.col("somma_esiti_violazione_plico")
@@ -1351,11 +1351,11 @@ PenaleRendicontazioneSailpost = SailpostData.select(
                     )
                     - 0.021
                 )
-                * 1000,
-                0,
-            )
-            * F.lit(300),
-            F.lit(0),
+                * 1000
+                * F.lit(300),
+                F.lit(0),
+            ),
+            2,
         ),
     )
     .otherwise(0)
@@ -1430,8 +1430,8 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
         > 0,
         F.when(
             (F.col("prodotto") == "890") & (F.col("lotto").between(1, 20)),
-            F.greatest(
-                F.round(
+            F.round(
+                F.greatest(
                     (
                         (
                             F.when(
@@ -1444,17 +1444,17 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
                         )
                         - 0.021
                     )
-                    * 1000,
-                    0,
-                )
-                * 500,
-                F.lit(0),
+                    * 1000
+                    * 500,
+                    F.lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (F.col("prodotto") == "RS") & (F.col("lotto").between(21, 25)),
-            F.greatest(
-                F.round(
+            F.round(
+                F.greatest(
                     (
                         (
                             F.when(
@@ -1467,17 +1467,17 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
                         )
                         - 0.021
                     )
-                    * 1000,
-                    0,
-                )
-                * 300,
-                F.lit(0),
+                    * 1000
+                    * 300,
+                    F.lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (F.col("prodotto") == "AR") & (F.col("lotto").between(26, 30)),
-            F.greatest(
-                F.round(
+            F.round(
+                F.greatest(
                     (
                         (
                             F.when(
@@ -1490,44 +1490,53 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
                         )
                         - 0.021
                     )
-                    * 1000,
-                    0,
-                )
-                * 500,
-                F.lit(0),
+                    * 1000
+                    * 500,
+                    F.lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (F.col("prodotto") == "RS") & (F.col("lotto") == 97),
-            F.greatest(
-                F.when(F.col("somma_ritardi").isNull(), F.lit(0)).otherwise(
-                    F.col("somma_ritardi") / 24
-                )
-                * 0.0678
-                * 0.001,
-                F.lit(0),
+            F.round(
+                F.greatest(
+                    F.when(F.col("somma_ritardi").isNull(), F.lit(0)).otherwise(
+                        F.col("somma_ritardi") / 24
+                    )
+                    * 0.0678
+                    * 0.001,
+                    F.lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (F.col("prodotto") == "AR") & (F.col("lotto") == 98),
-            F.greatest(
-                F.when(F.col("somma_ritardi").isNull(), F.lit(0)).otherwise(
-                    F.col("somma_ritardi") / 24
-                )
-                * 0.0225
-                * 0.001,
-                F.lit(0),
+            F.round(
+                F.greatest(
+                    F.when(F.col("somma_ritardi").isNull(), F.lit(0)).otherwise(
+                        F.col("somma_ritardi") / 24
+                    )
+                    * 0.0225
+                    * 0.001,
+                    F.lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (F.col("prodotto") == "890") & (F.col("lotto") == 99),
-            F.greatest(
-                F.when(F.col("somma_ritardi").isNull(), F.lit(0)).otherwise(
-                    F.col("somma_ritardi") / 24
-                )
-                * 0.19
-                * 0.001,
-                F.lit(0),
+            F.round(
+                F.greatest(
+                    F.when(F.col("somma_ritardi").isNull(), F.lit(0)).otherwise(
+                        F.col("somma_ritardi") / 24
+                    )
+                    * 0.19
+                    * 0.001,
+                    F.lit(0),
+                ),
+                2,
             ),
         )
         .otherwise(0),
@@ -1545,8 +1554,8 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
         > 0,
         F.when(
             (col("prodotto") == "890") & (col("lotto").between(1, 20)),
-            F.greatest(
-                F.round(
+            F.round(
+                F.greatest(
                     (
                         (
                             F.coalesce(col("somma_esiti_violazione_plico"), lit(0))
@@ -1554,17 +1563,17 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
                         )
                         - 0.021
                     )
-                    * 1000,
-                    0,
-                )
-                * 300,
-                lit(0),
+                    * 1000
+                    * 300,
+                    lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (col("prodotto") == "RS") & (col("lotto").between(21, 25)),
-            F.greatest(
-                F.round(
+            F.round(
+                F.greatest(
                     (
                         (
                             F.coalesce(col("somma_esiti_violazione_plico"), lit(0))
@@ -1572,17 +1581,17 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
                         )
                         - 0.021
                     )
-                    * 1000,
-                    0,
-                )
-                * 300,
-                lit(0),
+                    * 1000
+                    * 300,
+                    lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (col("prodotto") == "AR") & (col("lotto").between(26, 30)),
-            F.greatest(
-                F.round(
+            F.round(
+                F.greatest(
                     (
                         (
                             F.coalesce(col("somma_esiti_violazione_plico"), lit(0))
@@ -1590,32 +1599,41 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
                         )
                         - 0.021
                     )
-                    * 1000,
-                    0,
-                )
-                * 300,
-                lit(0),
+                    * 1000
+                    * 300,
+                    lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (col("prodotto") == "RS") & (col("lotto") == 97),
-            F.greatest(
-                F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0678 * 0.001,
-                lit(0),
+            F.round(
+                F.greatest(
+                    F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0678 * 0.001,
+                    lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (col("prodotto") == "AR") & (col("lotto") == 98),
-            F.greatest(
-                F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0225 * 0.001,
-                lit(0),
+            F.round(
+                F.greatest(
+                    F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.0225 * 0.001,
+                    lit(0),
+                ),
+                2,
             ),
         )
         .when(
             (col("prodotto") == "RS") & (col("lotto") == 99),
-            F.greatest(
-                F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.19 * 0.001,
-                lit(0),
+            F.round(
+                F.greatest(
+                    F.coalesce(col("ritardo_plico_in_giorni"), lit(0)) * 0.19 * 0.001,
+                    lit(0),
+                ),
+                2,
             ),
         )
         .otherwise(lit(0)),
