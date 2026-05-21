@@ -1377,7 +1377,7 @@ df1 = df1.withColumn(
 
 df1 = df1.withColumn(
     "esiti_rendicontati_violazione_sla_no_plico",
-    F.when(
+    F.when(  # se abbiamo un fine recapito stato NO PLICO
         (F.col("fine_recapito_stato").isNull())
         | (
             ~F.col("fine_recapito_stato").isin(
@@ -1397,10 +1397,10 @@ df1 = df1.withColumn(
                 "RECRI004C",
             )
         ),
-        F.when(
+        F.when(  # se certificazione uguale al tentativo
             F.col("tentativo_recapito_stato") == F.col("certificazione_recapito_stato"),
             F.when(F.col("ritardo_fine_recapito") > 0, 1).otherwise(None),
-        ).otherwise(
+        ).otherwise(  # se certificazione NON È uguale al tentativo
             F.when(
                 F.col("tentativo_recapito_stato").isin(
                     "RECRN010",
@@ -1433,6 +1433,33 @@ df1 = df1.withColumn(
                 )
             )
         ),
+    ).otherwise(  # se certificazione NON È uguale al tentativo
+        F.when(
+            F.col("tentativo_recapito_stato").isin(
+                "RECRN010",
+                "RECRS010",
+                "RECAG010",
+            ),
+            (
+                F.when(F.col("ritardo_tentativo_recapito") > 0, 1).otherwise(0)
+                + F.when(F.col("ritardo_messa_in_giacenza") > 0, 1).otherwise(0)
+                + F.when(F.col("ritardo_accettazione_23L") > 0, 1).otherwise(0)
+            ),
+        ).otherwise(
+            F.when(
+                F.col("tentativo_recapito_stato").isin(
+                    "RECRSI001",
+                    "RECRI001",
+                ),
+                (
+                    F.when(F.col("ritardo_messa_in_giacenza") > 0, 1).otherwise(0)
+                    + F.when(F.col("ritardo_tentativo_recapito") > 0, 1).otherwise(0)
+                ),
+            ).otherwise(
+                F.when(F.col("ritardo_messa_in_giacenza") > 0, 1).otherwise(0)
+                + F.when(F.col("ritardo_accettazione_23L") > 0, 1).otherwise(0)
+            )
+        )
     ),
 )
 
