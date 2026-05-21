@@ -89,6 +89,7 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
       END) = 2024
   )
   AND  g.statusrequest NOT IN ('PN999', 'PN998')
+
 """)
 
 ####inserire lista
@@ -121,17 +122,17 @@ df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 ######################################### Conteggio dei record
 
 record_count_filtrato_df = spark.sql("""
-    SELECT
-        lotto,
-        prodotto,
-        COUNT(*) AS total_records
-    FROM
-        gold_postalizzazione
-    WHERE tentativo_recapito_data IS NOT NULL
-    GROUP BY
-        lotto,
-        prodotto;
-    """)
+SELECT
+    lotto,
+    prodotto,
+    COUNT(*) AS total_records
+FROM
+    gold_postalizzazione
+WHERE tentativo_recapito_data IS NOT NULL
+GROUP BY
+    lotto,
+    prodotto;
+""")
 
 ######################################### Creazione del DataFrame con le festività
 
