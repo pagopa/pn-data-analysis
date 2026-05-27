@@ -13,9 +13,18 @@ from pyspark.sql.window import Window
 
 spark = SparkSession.builder.getOrCreate()
 
+#########################################
+# Configurazione logica lotto unico
+#
+# False = aggregazione ordinaria per lotto.
+# True  = per RTI Sailpost-Snem il lotto viene accorpato
+#         e valorizzato come "Lotto unico",
+
+logica_lotto_unico = False
+
 # fix: codice oggetto corretto per i recapitisti
 df_filtrato = spark.sql("""
-   SELECT
+   SELECT DISTINCT
     g.iun,
     g.requestid,
     g.requesttimestamp,
@@ -72,13 +81,18 @@ FROM send.gold_postalizzazione_analytics g
 LEFT JOIN send_dev.temp_incident i ON (g.requestid = i.requestid)
 LEFT JOIN send_dev.cap_area_provincia_regione c ON (c.cap = g.geokey)
 WHERE fine_recapito_data_rendicontazione IS NOT NULL
-  AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
-  AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('RTI Sailpost-Snem')
-  --- Impostare il numero del trimestre
-  AND CEIL(MONTH(fine_recapito_data_rendicontazione) / 3) = 2
-  --- Impostare l'anno
-  AND YEAR(fine_recapito_data_rendicontazione) = 2024
-  AND  statusrequest NOT IN ('PN999', 'PN998')
+    AND fine_recapito_stato NOT IN ('RECRS006', 'RECRS013','RECRN006', 'RECRN013', 'RECAG004', 'RECAG013')
+    AND COALESCE(i.recapitista_corretto, g.recapitista) = 'RTI Sailpost-Snem'
+    /* Specifiche di calcolo delle regioni attualmente in gestione a Sailpost (lotti 6,12,18,20)*/
+    --AND lotto IN ('6','12','18','20')
+    /* Specifiche di calcolo delle regioni non più gestite da Sailpost (lotti 8,3,4)*/
+    --AND lotto IN ('3','4', '8')
+    -- CONTINUA NORMALMENTE
+    --- Impostare il numero del trimestre
+    AND QUARTER(fine_recapito_data_rendicontazione) = 1
+    --- Impostare l'anno
+    AND YEAR(fine_recapito_data_rendicontazione) = 2026
+    AND  statusrequest NOT IN ('PN999', 'PN998')
 """)
 # fix PN999 e PN998
 df_filtrato = df_filtrato.filter(
@@ -93,15 +107,32 @@ df_filtrato.createOrReplaceTempView("gold_postalizzazione")
 
 ######################################### Conteggio dei record
 
-record_count_filtrato_df = spark.sql("""
-SELECT
-    recapitista,
-    COUNT(*) AS total_records
-FROM
-    gold_postalizzazione
-WHERE tentativo_recapito_data IS NOT NULL AND (accettazione_recapitista_CON018_data IS NOT NULL OR affido_recapitista_CON016_data IS NOT NULL)
-GROUP BY recapitista
-""")
+record_count_filtrato_df = (
+    spark.sql("""
+            SELECT
+                recapitista,
+                COUNT(*) AS total_records
+            FROM
+                gold_postalizzazione
+            WHERE tentativo_recapito_data IS NOT NULL
+            AND (accettazione_recapitista_CON018_data IS NOT NULL OR affido_recapitista_CON016_data IS NOT NULL)
+            GROUP BY recapitista
+            """)
+    if logica_lotto_unico
+    else spark.sql("""
+            SELECT
+                lotto,
+                prodotto,
+                COUNT(*) AS total_records
+            FROM
+                gold_postalizzazione
+            WHERE tentativo_recapito_data IS NOT NULL
+            AND (accettazione_recapitista_con018_data IS NOT NULL OR affido_recapitista_con016_data IS NOT NULL)
+            GROUP BY
+                lotto,
+                prodotto;
+            """)
+)
 
 ######################################### Creazione del DataFrame con le festività
 
@@ -127,6 +158,7 @@ festivita = [
     ("2024-06-02", "Festa della Repubblica"),
     ("2024-08-15", "Ferragosto"),
     ("2024-11-01", "Tutti i Santi"),
+    ("2024-12-08", "Immacolata Concezione"),
     ("2024-12-25", "Natale"),
     ("2024-12-26", "Santo Stefano"),
     ("2025-01-01", "Capodanno"),
@@ -141,6 +173,19 @@ festivita = [
     ("2025-12-08", "Immacolata Concezione"),
     ("2025-12-25", "Natale"),
     ("2025-12-26", "Santo Stefano"),
+    ("2026-01-01", "Capodanno"),
+    ("2026-01-06", "Epifania"),
+    ("2026-04-05", "Pasqua"),
+    ("2026-04-06", "Lunedì dell'Angelo"),
+    ("2026-04-25", "Festa della Liberazione"),
+    ("2026-05-01", "Festa dei Lavoratori"),
+    ("2026-06-02", "Festa della Repubblica"),
+    ("2026-08-15", "Ferragosto"),
+    ("2026-10-04", "San Francesco d'Assisi"),
+    ("2026-11-01", "Tutti i Santi"),
+    ("2026-12-08", "Immacolata Concezione"),
+    ("2026-12-25", "Natale"),
+    ("2026-12-26", "Santo Stefano"),
 ]
 
 holiday_dates = {datetime.strptime(date, "%Y-%m-%d").date() for date, _ in festivita}
@@ -1048,10 +1093,18 @@ ranking_data = calcolo_tempo_recapito.filter((F.col("ritardo_recapito").isNotNul
 
 ######################################### Ranking
 
-window_spec = Window.partitionBy("recapitista").orderBy(
-    F.col("ritardo_recapito").asc(),
-    F.col("fine_recapito_data_rendicontazione").asc(),
-    F.col("requestid").asc(),
+window_spec = (
+    Window.partitionBy("recapitista").orderBy(
+        F.col("ritardo_recapito").asc(),
+        F.col("fine_recapito_data_rendicontazione").asc(),
+        F.col("requestid").asc(),
+    )
+    if logica_lotto_unico
+    else Window.partitionBy("lotto").orderBy(
+        F.col("ritardo_recapito").asc(),
+        F.col("fine_recapito_data_rendicontazione").asc(),
+        F.col("requestid").asc(),
+    )
 )
 
 ranking_data = ranking_data.withColumn("ranking", F.row_number().over(window_spec))
@@ -1062,8 +1115,12 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.join(
     ranking_data, on="requestid", how="left"
 )
 
-calcolo_tempo_recapito = calcolo_tempo_recapito.join(
-    record_count_filtrato_df, on="recapitista", how="left"
+calcolo_tempo_recapito = (
+    calcolo_tempo_recapito.join(record_count_filtrato_df, on="recapitista", how="left")
+    if logica_lotto_unico
+    else calcolo_tempo_recapito.join(
+        record_count_filtrato_df, on=["lotto", "prodotto"], how="left"
+    )
 )
 
 ######################################### Calcolo della percentuale per lotto_effettivo
@@ -1223,7 +1280,6 @@ calcolo_penale = report_sla_modificato.withColumn(
     ),
 )
 
-
 ######################################### Creazione della vista temporanea reportPenali
 calcolo_penale.createOrReplaceTempView("reportPenali")
 
@@ -1236,16 +1292,21 @@ spark.sql("""SELECT * FROM reportPenali""").writeTo(
 
 report_penali = spark.table("reportPenali")
 
-######################################### Calcolo aggregato penali
+lotto_group_col = (
+    F.when(F.col("recapitista") == "RTI Sailpost-Snem", F.lit("Lotto unico")).alias(
+        "Lotto"
+    )
+    if logica_lotto_unico
+    else F.col("lotto").alias("Lotto")
+)
+
+#########################################
+# Calcolo aggregato penali
 
 calcolo_riepilogo = report_penali.groupBy(
     "recapitista",
-    F.when(F.col("recapitista") == "RTI Sailpost-Snem", None)
-    .otherwise(F.col("lotto"))
-    .alias("Lotto"),
-    F.when(F.col("recapitista") == "RTI Sailpost-Snem", None)
-    .otherwise(F.col("prodotto"))
-    .alias("Prodotto"),
+    lotto_group_col,
+    F.col("prodotto").alias("Prodotto"),
     F.when(
         F.col("fine_recapito_data_rendicontazione").isNotNull(),
         F.when(F.month("fine_recapito_data_rendicontazione").between(1, 3), 1)
@@ -1265,15 +1326,19 @@ calcolo_riepilogo = report_penali.groupBy(
 ).agg(
     F.sum(F.when((F.col("corrispettivo_penale_recapito") > 0), 1).otherwise(0)).alias(
         "Recapito_con_violazione_SLA"
-    ),  # fix: quando trovo il corrispettivo_penale_recapito > 0 allora ho una violazione
+    ),
     F.count("*").alias("Recapiti_Totali"),
     F.round(F.sum(F.col("corrispettivo_penale_recapito")), 2).alias("Penale_Recapito"),
 )
 
-######################################### Creazione della vista temporanea riepilogoMese
+#########################################
+# Creazione della vista temporanea riepilogoTrimestre
+
 calcolo_riepilogo.createOrReplaceTempView("riepilogoTrimestre")
 
-######################################### Estrazione aggregato - scrittura in tabella
+#########################################
+# Estrazione aggregato - scrittura in tabella
+
 spark.sql("""SELECT * FROM riepilogoTrimestre""").writeTo(
     "send_dev.penali_recapito_aggregato"
 ).using("iceberg").tableProperty("format-version", "2").tableProperty(
