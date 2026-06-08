@@ -594,7 +594,6 @@ def build_base_query() -> str:
                     t.fine_recapito_data AS fine_recapito_data_silver,
                     t.fine_recapito_rendicontazione AS fine_recapito_rendicontazione_silver,
                     d.documenttype,
-                    CASE WHEN w.requestid IS NOT NULL THEN 1 ELSE 0 END AS flag_wi7_poste,
                     CASE
                         WHEN n.type_notif = 'MULTI' THEN 1
                         ELSE 0
@@ -720,13 +719,11 @@ def build_base_query() -> str:
                     END AS controllo_documenttype
                 FROM send.gold_postalizzazione_analytics s
                     LEFT JOIN temp_demat d ON d.requestid = s.requestid AND d.rn_demat = 1
-                    LEFT JOIN send_dev.wi7_poste_da_escludere w ON s.requestid = w.requestid
                     LEFT JOIN send.silver_notification sn ON (sn.iun = s.iun)
                     LEFT JOIN send.gold_notification_analytics n ON (s.iun = n.iun)
                     LEFT JOIN send.silver_timeline tl ON (s.iun = tl.iun AND tl.category = 'SCHEDULE_REFINEMENT')
                     LEFT JOIN max_events_silver_postalizzazione t ON (s.requestid = t.requestid)
-                WHERE
-                    s.requestid NOT IN (SELECT requestid FROM send_dev.wi7_poste_da_escludere)
+                WHERE 1=1
                     AND s.scarto_consolidatore_stato IS NULL
                     AND s.fine_recapito_stato IS NOT NULL
                     AND s.flag_prodotto_estero = 0
@@ -1006,33 +1003,21 @@ def build_queries() -> dict:
     FROM {base_view}
     """
 
-    query_fulmine = (
-        query_base_altri_recapitisti
-        + """
+    query_fulmine = query_base_altri_recapitisti + """
     WHERE recapitista_unif = 'Fulmine'
     """
-    )
 
-    query_poste = (
-        query_base_poste
-        + """
+    query_poste = query_base_poste + """
     WHERE recapitista_unif = 'Poste'
     """
-    )
 
-    query_post_service = (
-        query_base_altri_recapitisti
-        + """
+    query_post_service = query_base_altri_recapitisti + """
     WHERE recapitista_unif = 'POST & SERVICE'
     """
-    )
 
-    query_sailpost = (
-        query_base_altri_recapitisti
-        + """
+    query_sailpost = query_base_altri_recapitisti + """
     WHERE recapitista_unif = 'RTI Sailpost-Snem'
     """
-    )
 
     query_l3 = f"""
     SELECT DISTINCT
@@ -1075,7 +1060,9 @@ def overwrite_iceberg_table_from_df(df_spark, target_table: str) -> None:
 
     df_spark.createOrReplaceTempView("DF_OUTPUT_REPORT_BONIFICA")
 
-    logging.info(f"Sovrascrittura della tabella {target_table}...")
+    logging.info(
+        f"Sovrascrittura della tabella {target_table} tramite createOrReplace..."
+    )
     df_spark.sparkSession.sql("""SELECT * FROM DF_OUTPUT_REPORT_BONIFICA""").writeTo(
         target_table
     ).using("iceberg").tableProperty("format-version", "2").tableProperty(
@@ -1134,6 +1121,10 @@ def main():
     }
 
     try:
+        spark_conf = spark.sparkContext.getConf().getAll()
+        for k, v in spark_conf:
+            logging.info(f"{k}: {v}")
+
         creds = load_google_credentials(GOOGLE_SECRET_PATH)
 
         logging.info("Costruzione base comune finale_filtrato...")
@@ -1141,7 +1132,9 @@ def main():
 
         base_df = spark.sql(base_query).persist(StorageLevel.MEMORY_AND_DISK)
 
-        logging.info("Materializzazione persist base_df...")
+        logging.info(
+            "Materializzazione persist della base comune condivisa tra tutte le query..."
+        )
         base_count = base_df.count()
         logging.info(f"Base comune materializzata con {base_count} righe.")
 
