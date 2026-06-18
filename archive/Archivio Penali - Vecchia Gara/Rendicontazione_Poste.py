@@ -81,14 +81,14 @@ df1 = spark.sql("""
                             OR (demat_23l_ar_data_rendicontazione IS NULL AND demat_plico_data_rendicontazione IS NOT NULL)
                             OR  (demat_23l_ar_data_rendicontazione IS NOT NULL AND demat_plico_data_rendicontazione IS NULL) )
                     AND (
-                        (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
-                        OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
+                        (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 1)
+                        OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 1)
                     )
                     AND (
                         YEAR(CASE
                             WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
                             ELSE accettazione_recapitista_con018_data
-                        END) = 2024
+                        END) = 2025
                     )
                     AND  g.statusrequest NOT IN ('PN999', 'PN998');
                     """)
@@ -2057,7 +2057,8 @@ PenaleRendicontazioneOther = OtherRecapitistaData.select(
         ),
     )
     .when(
-        (col("prodotto") == "AR") & (col("lotto").between(26, 30)),
+        (col("prodotto") == "AR")
+        & ((col("lotto").between(26, 30)) | (col("lotto") == "30BIS")),
         F.round(
             F.coalesce(col("somma_ritardi"), lit(0))
             / (
