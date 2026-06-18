@@ -77,16 +77,16 @@ WHERE fine_recapito_data_rendicontazione IS NOT NULL
   AND COALESCE(i.recapitista_corretto, g.recapitista) IN ('Poste', 'FSU - AR', 'FSU - 890', 'FSU - RS', 'FSU')
   AND (
       -- Calcolare il trimestre da accettazione_recapitista_con018_data se non è NULL
-      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 4)
+      (accettazione_recapitista_con018_data IS NOT NULL AND CEIL(MONTH(accettazione_recapitista_con018_data) / 3) = 1)
       -- Se con018 è NULL, calcolare il trimestre su affido_recapitista_con016_data, se non è NULL
-      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 4)
+      OR (accettazione_recapitista_con018_data IS NULL AND affido_recapitista_con016_data IS NOT NULL AND CEIL(MONTH(affido_recapitista_con016_data + INTERVAL 1 DAY) / 3) = 1)
   )
   AND (
       -- Anno da accettazione_recapitista_con018_data se non è NULL, altrimenti da affido_recapitista_con016_data
       YEAR(CASE
           WHEN accettazione_recapitista_con018_data IS NULL THEN affido_recapitista_con016_data + INTERVAL 1 DAY
           ELSE accettazione_recapitista_con018_data
-      END) = 2024
+      END) = 2025
   )
   AND  g.statusrequest NOT IN ('PN999', 'PN998')
 
@@ -386,7 +386,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
         .when(
             (F.col("lotto") == "99")
             & (F.col("prodotto") == "890")
-            & (F.col("zona") == "EU"),
+            & (F.col("zona").isin(["AM", "CP", "EU"])),
             7,
         )
         .when(
@@ -959,7 +959,7 @@ calcolo_tempo_recapito = calcolo_tempo_recapito.withColumn(
     .when(
         (F.col("lotto") == "99")
         & (F.col("prodotto") == "890")
-        & (F.col("zona") == "EU"),
+        & (F.col("zona").isin(["AM", "CP", "EU"])),
         7,
     )
     .otherwise(F.lit(None)),
