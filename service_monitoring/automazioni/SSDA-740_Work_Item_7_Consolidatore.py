@@ -616,12 +616,13 @@ def prepare_output_for_gsheet(df_spark, delimiter: str = COLLAPSE_DELIMITER):
 def build_wi7_query(spark: SparkSession):
     logging.info("Esecuzione query base WI7 consolidatore...")
 
-    df_start = spark.sql(
-        """
+    df_start = spark.sql("""
         SELECT DISTINCT
             gpa.senderpaid,
             gpa.requestid,
             gpa.requesttimestamp,
+            gpa.requestdate AS data_oggetto,
+            date_format(gpa.requestdate, 'yyyy-MM') AS anno_mese_oggetto,
             gpa.prodotto,
             gpa.geokey,
             CASE
@@ -661,8 +662,7 @@ def build_wi7_query(spark: SparkSession):
                 'duplicatedRequest',
                 'booked'
           )
-        """
-    )
+        """)
 
     df_clustered = (
         df_start.withColumn(
@@ -789,6 +789,8 @@ def build_wi7_query(spark: SparkSession):
             "senderpaid",
             "requestid",
             "requesttimestamp",
+            "data_oggetto",
+            "anno_mese_oggetto",
             "prodotto",
             "geokey",
             "affido_consolidatore_data",
