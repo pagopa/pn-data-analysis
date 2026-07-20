@@ -226,9 +226,7 @@ def build_log_df(
             "data_fine_intervallo": [data_fine_intervallo],
             "max_requesttimestamp_gold": [max_requesttimestamp_gold],
             "n_oggetti_estrazione_corrente": [n_oggetti_estrazione_corrente],
-            "n_oggetti_estrazione_precedente": [
-                n_oggetti_estrazione_precedente
-            ],
+            "n_oggetti_estrazione_precedente": [n_oggetti_estrazione_precedente],
             "n_oggetti_in_comune": [n_oggetti_in_comune],
             "n_nuovi_oggetti": [n_nuovi_oggetti],
             "canale_slack_alert": [canale_slack_alert],
@@ -428,11 +426,7 @@ def build_alert_messages(
     )
 
     numero_totale = len(working_df)
-    etichetta_oggetti = (
-        "nuovo oggetto"
-        if numero_totale == 1
-        else "nuovi oggetti"
-    )
+    etichetta_oggetti = "nuovo oggetto" if numero_totale == 1 else "nuovi oggetti"
 
     header = (
         "⚠️ *Nuove rendicontazioni di causa di forza maggiore*\n\n"
@@ -458,25 +452,16 @@ def build_alert_messages(
 
         totale_giorno = int(day_df["numero_oggetti"].sum())
         etichetta_rendicontati = (
-            "rendicontato"
-            if totale_giorno == 1
-            else "rendicontati"
+            "rendicontato" if totale_giorno == 1 else "rendicontati"
         )
 
         # Lunghezze massime per l'allineamento nel blocco monospaziato.
-        max_recapitista_len = max(
-            len(str(value))
-            for value in day_df["recapitista"]
-        )
+        max_recapitista_len = max(len(str(value)) for value in day_df["recapitista"])
 
-        max_numero_len = max(
-            len(str(int(value)))
-            for value in day_df["numero_oggetti"]
-        )
+        max_numero_len = max(len(str(int(value))) for value in day_df["numero_oggetti"])
 
         block_lines = [
-            f"• *{totale_giorno} {etichetta_rendicontati} "
-            f"il {giorno_label}:*",
+            f"• *{totale_giorno} {etichetta_rendicontati} " f"il {giorno_label}:*",
             "```",
         ]
 
@@ -492,25 +477,21 @@ def build_alert_messages(
 
         block_lines.append("```")
 
-        day_blocks.append(
-            "\n".join(block_lines) + "\n"
-        )
+        day_blocks.append("\n".join(block_lines) + "\n")
 
     messages: list[str] = []
     current_message = header
 
     for day_block in day_blocks:
         if (
-            len(current_message) + len(day_block)
-            > SLACK_MAX_MESSAGE_CHARS
+            len(current_message) + len(day_block) > SLACK_MAX_MESSAGE_CHARS
             and current_message != header
         ):
             messages.append(current_message.rstrip())
 
             current_message = (
                 "⚠️ *Segue riepilogo delle nuove "
-                "cause di forza maggiore*\n\n"
-                + day_block
+                "cause di forza maggiore*\n\n" + day_block
             )
         else:
             current_message += day_block
@@ -561,16 +542,12 @@ WITH base AS(
             WHEN 'C04' THEN 'Maltempo: Alluvione, Neve, Allagamento'
             WHEN 'C05' THEN 'Terremoto'
             WHEN 'C06' THEN 'Eruzione vulcanica'
-            ELSE CONCAT(
-                'Causale non mappata: ',
-                TRIM(causa_forza_maggiore_dettagli)
-            )
+            ELSE 'Causale non mappata'
         END AS causa_forza_maggiore_descrizione,
         causa_forza_maggiore_data,
         causa_forza_maggiore_data_rendicontazione
     FROM send.gold_postalizzazione_analytics
     WHERE causa_forza_maggiore_data_rendicontazione IS NOT NULL
-    AND COALESCE(TRIM(causa_forza_maggiore_dettagli), '') <> ''
     AND TO_DATE(causa_forza_maggiore_data_rendicontazione)
         BETWEEN TO_DATE('{data_inizio_sql}') AND TO_DATE('{data_fine_sql}')
 )
