@@ -27,6 +27,9 @@ SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
 TAB_LOG = "Log controllo"
 TAB_DETTAGLIO = "Dettaglio ultime cause forza maggiore"
 
+SHEET_ID_AUTORIZZAZIONI = "1PMPc1RyaVuZ0hk-J-m-stWxjQlSET805GJhpR4ujEM0"
+TAB_AUTORIZZAZIONI = "Foglio1"
+
 # In assenza di una precedente esecuzione conclusa con successo, la prima run
 # analizza gli ultimi N giorni.
 GIORNI_RECUPERO_PRIMA_ESECUZIONE = 7
@@ -60,13 +63,18 @@ EVENT_KEY_COLUMNS = [
 DETAIL_COLUMNS = [
     "requestid",
     "codice_oggetto",
-    "geokey",
+    "cap",
+    "provincia",
+    "regione",
     "prodotto",
     "recapitista",
     "causa_forza_maggiore_causale",
     "causa_forza_maggiore_descrizione",
     "causa_forza_maggiore_data",
     "causa_forza_maggiore_data_rendicontazione",
+    "flag_autorizzazione",
+    "data_autorizzazione",
+    "motivo autorizzazione",
 ]
 
 
@@ -176,6 +184,108 @@ def read_sheet_tab(
         raise
 
 
+def get_authorizations_sheet_client(creds: dict) -> Sheet:
+    return Sheet(
+        sheet_id=SHEET_ID_AUTORIZZAZIONI,
+        service_credentials=creds,
+        id_mode="key",
+    )
+
+
+def read_authorizations_sheet(creds: dict) -> pd.DataFrame:
+    """Legge il tab contenente le cause di forza maggiore autorizzate."""
+    logging.info(
+        "Lettura del tab autorizzazioni Google Sheet: %s",
+        TAB_AUTORIZZAZIONI,
+    )
+    downloaded = get_authorizations_sheet_client(creds).download(TAB_AUTORIZZAZIONI)
+
+    if downloaded is None:
+        authorizations_df = pd.DataFrame()
+    elif isinstance(downloaded, pd.DataFrame):
+        authorizations_df = downloaded.copy()
+    else:
+        authorizations_df = pd.DataFrame(downloaded)
+
+    required_columns = [
+        "requestid",
+        "data_autorizzazione",
+        "motivo autorizzazione causa forza maggiore",
+    ]
+    missing_columns = [
+        column for column in required_columns if column not in authorizations_df.columns
+    ]
+    if missing_columns:
+        raise ValueError(
+            "Nel Google Sheet delle autorizzazioni mancano le colonne: "
+            + ", ".join(missing_columns)
+        )
+
+    authorizations_df = authorizations_df[required_columns].copy()
+    authorizations_df.rename(
+        columns={
+            "motivo autorizzazione causa forza maggiore": ("motivo autorizzazione")
+        },
+        inplace=True,
+    )
+
+    authorizations_df["requestid"] = (
+        authorizations_df["requestid"].fillna("").astype(str).str.strip()
+    )
+    authorizations_df = authorizations_df.loc[
+        authorizations_df["requestid"] != ""
+    ].copy()
+
+    # Evita che eventuali requestid duplicati nel foglio moltiplichino le righe
+    # del dettaglio durante la join.
+    authorizations_df = authorizations_df.drop_duplicates(
+        subset=["requestid"],
+        keep="last",
+    )
+
+    return authorizations_df
+
+
+def add_authorization_fields(
+    df: pd.DataFrame,
+    authorizations_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Aggiunge flag, data e motivo di autorizzazione tramite requestid."""
+    enriched_df = df.copy()
+    enriched_df["_requestid_join"] = (
+        enriched_df["requestid"].fillna("").astype(str).str.strip()
+    )
+
+    authorizations_for_join = authorizations_df.copy()
+    authorizations_for_join["_requestid_join"] = (
+        authorizations_for_join["requestid"].fillna("").astype(str).str.strip()
+    )
+    authorizations_for_join["flag_autorizzazione"] = 1
+    authorizations_for_join = authorizations_for_join[
+        [
+            "_requestid_join",
+            "flag_autorizzazione",
+            "data_autorizzazione",
+            "motivo autorizzazione",
+        ]
+    ]
+
+    enriched_df = enriched_df.merge(
+        authorizations_for_join,
+        on="_requestid_join",
+        how="left",
+    )
+    enriched_df["flag_autorizzazione"] = (
+        enriched_df["flag_autorizzazione"].fillna(0).astype(int)
+    )
+    enriched_df.drop(
+        columns=["_requestid_join"],
+        inplace=True,
+    )
+
+    return enriched_df
+
+
 def export_to_sheets(
     df: pd.DataFrame,
     creds: dict,
@@ -211,6 +321,7 @@ def build_log_df(
     n_oggetti_estrazione_precedente: int | str,
     n_oggetti_in_comune: int | str,
     n_nuovi_oggetti: int | str,
+    n_oggetti_non_autorizzati: int | str,
     canale_slack_alert: str,
     esito_invio_alert: str,
     durata_job: str,
@@ -229,6 +340,7 @@ def build_log_df(
             "n_oggetti_estrazione_precedente": [n_oggetti_estrazione_precedente],
             "n_oggetti_in_comune": [n_oggetti_in_comune],
             "n_nuovi_oggetti": [n_nuovi_oggetti],
+            "n_oggetti_non_autorizzati": [n_oggetti_non_autorizzati],
             "canale_slack_alert": [canale_slack_alert],
             "esito_invio_alert": [esito_invio_alert],
             "durata_job": [durata_job],
@@ -255,14 +367,22 @@ def prepare_detail_for_sheet(df: pd.DataFrame) -> pd.DataFrame:
     detail_df = detail_df[DETAIL_COLUMNS]
 
     # L'apostrofo viene applicato soltanto all'output Google Sheet per evitare
-    # interpretazioni numeriche o scientifiche del codice oggetto.
-    detail_df["codice_oggetto"] = detail_df["codice_oggetto"].apply(
-        lambda value: (
-            ""
-            if pd.isna(value) or str(value).strip() == ""
-            else str(value) if str(value).startswith("'") else f"'{value}"
+    # interpretazioni numeriche o scientifiche del codice oggetto e del CAP.
+    for column in ["codice_oggetto", "cap"]:
+        detail_df[column] = detail_df[column].apply(
+            lambda value: (
+                ""
+                if pd.isna(value) or str(value).strip() == ""
+                else (str(value) if str(value).startswith("'") else f"'{value}")
+            )
         )
-    )
+
+    # Per gli oggetti non autorizzati data e motivo restano vuoti.
+    for column in ["data_autorizzazione", "motivo autorizzazione"]:
+        detail_df[column] = detail_df[column].where(
+            pd.notna(detail_df[column]),
+            "",
+        )
 
     for column in [
         "causa_forza_maggiore_data",
@@ -370,7 +490,9 @@ def build_alert_messages(
     """
     Costruisce un riepilogo Slack aggregato per:
     - giorno di rendicontazione;
-    - recapitista.
+    - recapitista;
+    - CAP;
+    - provincia.
 
     Il dettaglio dei singoli oggetti resta disponibile nel Google Sheet.
     """
@@ -384,25 +506,28 @@ def build_alert_messages(
         errors="coerce",
     ).dt.date
 
-    # Normalizzazione del nome del recapitista.
-    working_df["recapitista"] = (
-        working_df["recapitista"]
-        .fillna("NON DISPONIBILE")
-        .astype(str)
-        .str.strip()
-        .str.replace(r"[\r\n]+", " ", regex=True)
-    )
+    # Normalizzazione dei campi utilizzati nell'aggregazione.
+    for column in ["recapitista", "cap", "provincia"]:
+        working_df[column] = (
+            working_df[column]
+            .fillna("NON DISPONIBILE")
+            .astype(str)
+            .str.strip()
+            .str.replace(r"[\r\n]+", " ", regex=True)
+        )
 
-    working_df.loc[
-        working_df["recapitista"] == "",
-        "recapitista",
-    ] = "NON DISPONIBILE"
+        working_df.loc[
+            working_df[column] == "",
+            column,
+        ] = "NON DISPONIBILE"
 
     riepilogo_df = (
         working_df.groupby(
             [
                 "data_rendicontazione_giorno",
                 "recapitista",
+                "cap",
+                "provincia",
             ],
             dropna=False,
         )
@@ -420,8 +545,10 @@ def build_alert_messages(
         by=[
             "_data_ordinamento",
             "recapitista",
+            "cap",
+            "provincia",
         ],
-        ascending=[True, True],
+        ascending=[True, True, True, True],
         na_position="last",
     )
 
@@ -457,7 +584,8 @@ def build_alert_messages(
 
         # Lunghezze massime per l'allineamento nel blocco monospaziato.
         max_recapitista_len = max(len(str(value)) for value in day_df["recapitista"])
-
+        max_cap_len = max(len(str(value)) for value in day_df["cap"])
+        max_provincia_len = max(len(str(value)) for value in day_df["provincia"])
         max_numero_len = max(len(str(int(value))) for value in day_df["numero_oggetti"])
 
         block_lines = [
@@ -467,10 +595,16 @@ def build_alert_messages(
 
         for row in day_df.itertuples(index=False):
             recapitista = str(row.recapitista)
+            cap = str(row.cap)
+            provincia = str(row.provincia)
             numero_oggetti = int(row.numero_oggetti)
 
             block_lines.append(
                 f"{recapitista:<{max_recapitista_len}}"
+                f" | "
+                f"{cap:<{max_cap_len}}"
+                f" | "
+                f"{provincia:<{max_provincia_len}}"
                 f" | "
                 f"{numero_oggetti:>{max_numero_len}}"
             )
@@ -517,7 +651,9 @@ WITH base AS(
     SELECT
         requestid,
         CAST(codice_oggetto AS STRING) AS codice_oggetto,
-        geokey,
+        CAST(geokey AS STRING) AS cap,
+        province_name AS provincia,
+        region_name AS regione,
         prodotto,
         -- Il recapitista viene normalizzato dal prefisso del codice oggetto
         CASE
@@ -542,7 +678,7 @@ WITH base AS(
             WHEN 'C04' THEN 'Maltempo: Alluvione, Neve, Allagamento'
             WHEN 'C05' THEN 'Terremoto'
             WHEN 'C06' THEN 'Eruzione vulcanica'
-            ELSE 'Causale non mappata'
+            ELSE 'Causale non rendicontata'
         END AS causa_forza_maggiore_descrizione,
         causa_forza_maggiore_data,
         causa_forza_maggiore_data_rendicontazione
@@ -554,7 +690,9 @@ WITH base AS(
 SELECT
     requestid,
     codice_oggetto,
-    geokey,
+    cap,
+    provincia,
+    regione,
     prodotto,
     recapitista_unif AS recapitista,
     causa_forza_maggiore_causale,
@@ -693,6 +831,7 @@ def main() -> None:
     previous_object_count = 0
     common_object_count = 0
     new_object_count = 0
+    non_authorized_object_count = 0
     alert_slack_status = "NON ESEGUITO"
 
     slack_webhooks = load_slack_webhooks(SLACK_CONFIG_CANDIDATE_PATHS)
@@ -742,11 +881,14 @@ def main() -> None:
             n_oggetti_estrazione_precedente=previous_object_count,
             n_oggetti_in_comune=0,
             n_nuovi_oggetti=0,
+            n_oggetti_non_autorizzati=0,
             canale_slack_alert=SLACK_CANALE_ALERT,
             esito_invio_alert="NON ESEGUITO",
             durata_job="0.00",
             messaggio_errore="-",
         )
+
+        authorizations_df = read_authorizations_sheet(creds)
 
         max_requesttimestamp_gold = get_max_requesttimestamp_gold(spark)
         logging.info(
@@ -781,6 +923,21 @@ def main() -> None:
         )
         new_object_count = len(new_events_df)
 
+        current_enriched_df = add_authorization_fields(
+            df=current_normalized_df.drop(
+                columns=["_chiave_evento"],
+                errors="ignore",
+            ),
+            authorizations_df=authorizations_df,
+        )
+        new_events_enriched_df = add_authorization_fields(
+            df=new_events_df,
+            authorizations_df=authorizations_df,
+        )
+        non_authorized_object_count = int(
+            (current_enriched_df["flag_autorizzazione"] == 0).sum()
+        )
+
         logging.info(
             "Confronto completato. Correnti: %s - Precedenti: %s - In comune: %s - Nuovi: %s",
             current_object_count,
@@ -792,7 +949,7 @@ def main() -> None:
         # L'alert funzionale parte soltanto se esistono nuovi eventi.
         if new_object_count > 0:
             alert_messages = build_alert_messages(
-                nuovi_eventi_df=new_events_df,
+                nuovi_eventi_df=new_events_enriched_df,
                 data_inizio=data_inizio_intervallo,
                 data_fine=data_fine_intervallo,
             )
@@ -809,12 +966,7 @@ def main() -> None:
         # Il dettaglio viene sovrascritto soltanto dopo l'eventuale invio Slack
         # riuscito e contiene l'intera estrazione corrente. In questo modo,
         # eventuali rerun nella stessa giornata non ripresentano oggetti già segnalati.
-        detail_for_sheet = prepare_detail_for_sheet(
-            current_normalized_df.drop(
-                columns=["_chiave_evento"],
-                errors="ignore",
-            )
-        )
+        detail_for_sheet = prepare_detail_for_sheet(current_enriched_df)
         export_to_sheets(
             df=detail_for_sheet,
             creds=creds,
@@ -839,6 +991,7 @@ def main() -> None:
             n_oggetti_estrazione_precedente=previous_object_count,
             n_oggetti_in_comune=common_object_count,
             n_nuovi_oggetti=new_object_count,
+            n_oggetti_non_autorizzati=non_authorized_object_count,
             canale_slack_alert=SLACK_CANALE_ALERT,
             esito_invio_alert=alert_slack_status,
             durata_job=elapsed_minutes,
@@ -886,6 +1039,7 @@ def main() -> None:
                 n_oggetti_estrazione_precedente=previous_object_count,
                 n_oggetti_in_comune=common_object_count,
                 n_nuovi_oggetti=new_object_count,
+                n_oggetti_non_autorizzati=non_authorized_object_count,
                 canale_slack_alert=SLACK_CANALE_ALERT,
                 esito_invio_alert=alert_slack_status,
                 durata_job=elapsed_minutes,
