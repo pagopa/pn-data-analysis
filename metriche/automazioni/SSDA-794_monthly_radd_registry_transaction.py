@@ -23,9 +23,14 @@ logging.basicConfig(
 APP_NAME = "SSDA-794_Monthly_RADD_External_Code_Registry_Check"
 
 GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
+# File ufficiale
 SHEET_ID = "1I35amT0vMMkiJffyv36fUAE90g599oyYh6Rrfpf9rso"
 
+# File di supporto (per facilitare un richiedente)
+LATEST_SHEET_ID = "1Zou9JYLCRufwtjB3VCcNMjINHj3TiLe51LFT6O0unxQ"
+
 TAB_OUTPUT_BASE = "radd_external_code_not_valid"
+TAB_LATEST = "radd_external_code_not_valid_latest"
 TAB_LOG = "Log di controllo"
 
 SLACK_CONFIG_CANDIDATE_PATHS = [
@@ -83,9 +88,9 @@ def load_google_credentials(secret_path: str) -> dict:
 # ---------------- FUNZIONI GOOGLE SHEETS ----------------
 
 
-def get_sheet_client(creds: dict) -> Sheet:
-    """Restituisce il client Sheet già configurato."""
-    return Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode="key")
+def get_sheet_client(creds: dict, sheet_id: str = SHEET_ID) -> Sheet:
+    """Restituisce il client Sheet configurato per lo spreadsheet indicato."""
+    return Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode="key")
 
 
 def get_gspread_client(creds: dict):
@@ -255,13 +260,19 @@ def format_header_row(
 
 
 def export_to_sheets(
-    df: pd.DataFrame, creds: dict, sheet_name: str, missing: str = "-"
+    df: pd.DataFrame,
+    creds: dict,
+    sheet_name: str,
+    missing: str = "-",
+    sheet_id: str = SHEET_ID,
 ) -> pd.DataFrame:
     """
     Scrive il DataFrame sul tab indicato.
     A parità di nome tab, il contenuto viene sovrascritto.
     """
-    logging.info(f"Scrittura su Google Sheet: tab '{sheet_name}'...")
+    logging.info(
+        f"Scrittura su Google Sheet: spreadsheet='{sheet_id}', tab='{sheet_name}'..."
+    )
 
     df = sanitize_for_sheets(df, missing=missing)
 
@@ -270,7 +281,7 @@ def export_to_sheets(
 
     ensure_worksheet_exists(
         creds=creds,
-        sheet_id=SHEET_ID,
+        sheet_id=sheet_id,
         worksheet_name=sheet_name,
         rows=target_rows,
         cols=target_cols,
@@ -278,23 +289,23 @@ def export_to_sheets(
 
     _resize_worksheet_grid_best_effort(
         creds=creds,
-        sheet_id=SHEET_ID,
+        sheet_id=sheet_id,
         worksheet_name=sheet_name,
         target_rows=target_rows,
         target_cols=target_cols,
     )
 
-    sheet = get_sheet_client(creds)
+    sheet = get_sheet_client(creds, sheet_id=sheet_id)
     sheet.upload(sheet_name, df)
 
     format_header_row(
         creds=creds,
-        sheet_id=SHEET_ID,
+        sheet_id=sheet_id,
         worksheet_name=sheet_name,
     )
 
     logging.info(
-        f"Scrittura completata su tab '{sheet_name}'. "
+        f"Scrittura completata su spreadsheet='{sheet_id}', tab='{sheet_name}'. "
         f"Righe scritte: {len(df)} | Colonne: {len(df.columns)}"
     )
 
@@ -302,7 +313,11 @@ def export_to_sheets(
 
 
 def spark_to_sheets(
-    df_spark, creds: dict, sheet_name: str, missing: str = "-"
+    df_spark,
+    creds: dict,
+    sheet_name: str,
+    missing: str = "-",
+    sheet_id: str = SHEET_ID,
 ) -> pd.DataFrame:
     if df_spark is None:
         logging.warning(f"DataFrame Spark nullo, skip scrittura su tab '{sheet_name}'.")
@@ -312,7 +327,13 @@ def spark_to_sheets(
     df = df_spark.toPandas()
     logging.info(f"Conversione completata. Righe convertite: {len(df)}")
 
-    return export_to_sheets(df, creds, sheet_name, missing=missing)
+    return export_to_sheets(
+        df,
+        creds,
+        sheet_name,
+        missing=missing,
+        sheet_id=sheet_id,
+    )
 
 
 def upsert_log_to_sheets(
@@ -870,7 +891,22 @@ def main():
             "esito_controllo_codice <> 'CODICE_VALIDO_NEL_MOMENTO'"
         ).orderBy("partnerid_transaction", "external_code", "transaction_time")
 
-        output_df = spark_to_sheets(output_spark_df, creds, report_tab_name)
+        # 1. Output storico mensile: nuovo tab nel file principale.
+        output_df = spark_to_sheets(
+            output_spark_df,
+            creds,
+            report_tab_name,
+            sheet_id=SHEET_ID,
+        )
+
+        # 2. Vista latest: stesso contenuto, stesso DataFrame Pandas, tab fisso
+        #    nel file dedicato. A ogni run il contenuto viene sovrascritto.
+        export_to_sheets(
+            output_df,
+            creds,
+            TAB_LATEST,
+            sheet_id=LATEST_SHEET_ID,
+        )
 
         (
             min_operationstartdate_last_month,
@@ -898,7 +934,8 @@ def main():
             f"*Job:* {APP_NAME}\n"
             f"*RunId (UTC):* {run_id}\n"
             f"*Host:* {hostname}\n"
-            f"*Tab report:* {report_tab_name}\n"
+            f"*Tab report storico:* {report_tab_name}\n"
+            f"*Tab report latest:* {TAB_LATEST}\n"
             f"*Periodo operationstartdate:* {min_operationstartdate_last_month} → {max_operationstartdate_last_month}\n"
             f"*Righe estratte:* {len(output_df)}\n"
             f"*PartnerId distinti:* "
