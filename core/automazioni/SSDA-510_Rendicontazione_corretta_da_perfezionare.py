@@ -26,15 +26,19 @@ APP_NAME = "SSDA-510 Rendicontazione corretta da perfezionare"
 GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
 SHEET_ID_DA_PERFEZIONARE = "10zzJXlXct5fpNqLv_YOEAY6fvdkrFAbL9SUld3qx7ZI"
 SHEET_ID_BLOCCATO_PRIMO_ATTEMPT = "1lHWcXmW-DaidgNzwJAt9WLZUzQV-qk8U8k2fBWQtOSQ"
+SHEET_ID_NON_PERFEZIONATI_PAGAMENTO = "1KjIn8_HpPdm48wg2KvKhddep2d3P_HmuOko17jFm3jw"
 
 TAB_META = "Log di controllo"
 TAB_META_DA_PERFEZIONARE = TAB_META
 TAB_META_BLOCCATO_PRIMO_ATTEMPT = TAB_META
+TAB_META_NON_PERFEZIONATI_PAGAMENTO = TAB_META
 TAB_OUTPUT_DA_PERFEZIONARE = "Delta weekly SSDA-510"
 TAB_OUTPUT_BLOCCATO_PRIMO_ATTEMPT = "Bloccati primo attempt"
+TAB_OUTPUT_NON_PERFEZIONATI_PAGAMENTO = "Non perfezionati con pagamento"
 
 DETTAGLIO_DA_PERFEZIONARE = "da perfezionare"
 DETTAGLIO_BLOCCATO_PRIMO_ATTEMPT = "bloccato al primo attempt"
+DETTAGLIO_NON_PERFEZIONATI_PAGAMENTO = "non perfezionati con evidenza di pagamento"
 
 SLACK_CONFIG_CANDIDATE_PATHS = [
     "/Slack/notifications_webhook.txt",
@@ -1253,11 +1257,20 @@ def main():
     bloccati_count_pre_distinct = 0
     bloccati_count_post_distinct = 0
 
+    # Metriche cluster "non perfezionati con evidenza di pagamento".
+    pagamenti_righe_settimana_precedente = 0
+    pagamenti_oggetti_gia_presentati = 0
+    pagamenti_oggetti_nuovi = 0
+    pagamenti_righe_settimana_corrente = 0
+    pagamenti_count_pre_distinct = 0
+    pagamenti_count_post_distinct = 0
+
     df_pre_distinct_spark = None
     df_post_distinct_spark = None
     df_da_perf_all_spark = None
     df_da_perf_delta_spark = None
     df_bloccati_all_spark = None
+    df_pagamenti_all_spark = None
     drive_csv_file = {}
 
     try:
@@ -1272,13 +1285,22 @@ def main():
             service_credentials=creds,
             id_mode="key",
         )
+        sheet_pagamenti = Sheet(
+            sheet_id=SHEET_ID_NON_PERFEZIONATI_PAGAMENTO,
+            service_credentials=creds,
+            id_mode="key",
+        )
 
         max_date_str = get_last_update_date(spark)
 
-        # Tracciamento avvio run su entrambi i GSheet.
+        # Tracciamento avvio run sui GSheet di output.
         for sheet_id, tab_meta in [
             (SHEET_ID_DA_PERFEZIONARE, TAB_META_DA_PERFEZIONARE),
             (SHEET_ID_BLOCCATO_PRIMO_ATTEMPT, TAB_META_BLOCCATO_PRIMO_ATTEMPT),
+            (
+                SHEET_ID_NON_PERFEZIONATI_PAGAMENTO,
+                TAB_META_NON_PERFEZIONATI_PAGAMENTO,
+            ),
         ]:
             write_meta_tab(
                 creds=creds,
@@ -1310,6 +1332,13 @@ def main():
             int(df_old_bloccati.shape[0]) if not df_old_bloccati.empty else 0
         )
 
+        df_old_pagamenti = read_previous_tab(
+            sheet_pagamenti, TAB_OUTPUT_NON_PERFEZIONATI_PAGAMENTO
+        )
+        pagamenti_righe_settimana_precedente = (
+            int(df_old_pagamenti.shape[0]) if not df_old_pagamenti.empty else 0
+        )
+
         # Query base con possibile presenza di duplicati.
         logging.info("Start query base + materializzazione pre distinct...")
         t_pre = now_utc_dt()
@@ -1318,17 +1347,23 @@ def main():
 
         count_pre_distinct = df_pre_distinct_spark.count()
         da_perf_count_pre_distinct = df_pre_distinct_spark.filter(
-            F.col("dettaglio_rendicontazione") == DETTAGLIO_DA_PERFEZIONARE
+            (F.col("dettaglio_rendicontazione") == DETTAGLIO_DA_PERFEZIONARE)
+            & F.col("tms_date_payment").isNull()
         ).count()
         bloccati_count_pre_distinct = df_pre_distinct_spark.filter(
             F.col("dettaglio_rendicontazione") == DETTAGLIO_BLOCCATO_PRIMO_ATTEMPT
         ).count()
+        pagamenti_count_pre_distinct = df_pre_distinct_spark.filter(
+            (F.col("dettaglio_rendicontazione") == DETTAGLIO_DA_PERFEZIONARE)
+            & F.col("tms_date_payment").isNotNull()
+        ).count()
 
         logging.info(
-            "Fine pre distinct. Count totale: %s - da perfezionare: %s - bloccati primo attempt: %s - Tempo min: %s",
+            "Fine pre distinct. Count totale: %s - da perfezionare: %s - bloccati primo attempt: %s - non perfezionati con evidenza pagamento: %s - Tempo min: %s",
             count_pre_distinct,
             da_perf_count_pre_distinct,
             bloccati_count_pre_distinct,
+            pagamenti_count_pre_distinct,
             elapsed_minutes_str(t_pre),
         )
 
@@ -1336,9 +1371,18 @@ def main():
         logging.info("Start deduplica su requestid...")
         t_post = now_utc_dt()
 
-        df_post_distinct_spark = df_pre_distinct_spark.dropDuplicates(
-            ["requestid"]
-        ).persist(StorageLevel.MEMORY_AND_DISK)
+        df_post_distinct_spark = (
+            df_pre_distinct_spark.dropDuplicates(["requestid"])
+            .withColumn(
+                "dettaglio_rendicontazione",
+                F.when(
+                    (F.col("dettaglio_rendicontazione") == DETTAGLIO_DA_PERFEZIONARE)
+                    & F.col("tms_date_payment").isNotNull(),
+                    F.lit(DETTAGLIO_NON_PERFEZIONATI_PAGAMENTO),
+                ).otherwise(F.col("dettaglio_rendicontazione")),
+            )
+            .persist(StorageLevel.MEMORY_AND_DISK)
+        )
 
         count_post_distinct = df_post_distinct_spark.count()
 
@@ -1353,7 +1397,7 @@ def main():
         df_pre_distinct_spark = None
         logging.info("df_pre_distinct_spark rilasciato dalla cache dopo deduplica.")
 
-        # Split dell'output finale sui due valori del dettaglio_rendicontazione.
+        # Split dell'output finale sui valori del dettaglio_rendicontazione.
         logging.info("Split output per dettaglio_rendicontazione...")
 
         df_da_perf_all_spark = df_post_distinct_spark.filter(
@@ -1364,16 +1408,22 @@ def main():
             F.col("dettaglio_rendicontazione") == DETTAGLIO_BLOCCATO_PRIMO_ATTEMPT
         ).persist(StorageLevel.MEMORY_AND_DISK)
 
+        df_pagamenti_all_spark = df_post_distinct_spark.filter(
+            F.col("dettaglio_rendicontazione") == DETTAGLIO_NON_PERFEZIONATI_PAGAMENTO
+        ).persist(StorageLevel.MEMORY_AND_DISK)
+
         da_perf_count_post_distinct = df_da_perf_all_spark.count()
         bloccati_count_post_distinct = df_bloccati_all_spark.count()
+        pagamenti_count_post_distinct = df_pagamenti_all_spark.count()
 
         logging.info(
-            "Post distinct per cluster - da perfezionare: %s - bloccati primo attempt: %s",
+            "Post distinct per cluster - da perfezionare: %s - bloccati primo attempt: %s - non perfezionati con evidenza pagamento: %s",
             da_perf_count_post_distinct,
             bloccati_count_post_distinct,
+            pagamenti_count_post_distinct,
         )
 
-        # Da qui in poi si lavora sui due cluster separati.
+        # Da qui in poi si lavora sui cluster separati.
         df_post_distinct_spark.unpersist()
         df_post_distinct_spark = None
         logging.info(
@@ -1504,6 +1554,63 @@ def main():
             TAB_OUTPUT_BLOCCATO_PRIMO_ATTEMPT,
         )
 
+        # ---------------- CLUSTER: NON PERFEZIONATI CON EVIDENZA DI PAGAMENTO ----------------
+        # Stessa logica dei bloccati: nessun delta applicato all'output. Si
+        # sovrascrive ogni volta con tutto lo stock corrente, calcolando però nel
+        # log quanti erano già presenti nella precedente esecuzione e quanti sono nuovi.
+        df_old_pagamenti_ids_spark = build_previous_requestids_df(
+            spark, df_old_pagamenti
+        ).dropDuplicates(["requestid"])
+
+        if df_old_pagamenti_ids_spark.take(1):
+            logging.info(
+                "Calcolo oggetti non perfezionati con pagamento già presenti nella precedente esecuzione..."
+            )
+            t_pagamenti = now_utc_dt()
+
+            pagamenti_oggetti_gia_presentati = (
+                df_pagamenti_all_spark.alias("n")
+                .join(
+                    F.broadcast(df_old_pagamenti_ids_spark.alias("o")),
+                    on=F.col("n.requestid") == F.col("o.requestid"),
+                    how="inner",
+                )
+                .count()
+            )
+
+            logging.info(
+                "Fine confronto storico non perfezionati con pagamento. Già presentati: %s - Tempo min: %s",
+                pagamenti_oggetti_gia_presentati,
+                elapsed_minutes_str(t_pagamenti),
+            )
+        else:
+            logging.info(
+                "Nessun requestid storico disponibile per non perfezionati con evidenza di pagamento."
+            )
+            pagamenti_oggetti_gia_presentati = 0
+
+        pagamenti_righe_settimana_corrente = pagamenti_count_post_distinct
+        pagamenti_oggetti_nuovi = (
+            pagamenti_righe_settimana_corrente - pagamenti_oggetti_gia_presentati
+        )
+
+        logging.info(
+            "Non perfezionati con pagamento - precedente: %s - presentati correnti: %s - già presentati: %s - nuovi: %s",
+            pagamenti_righe_settimana_precedente,
+            pagamenti_righe_settimana_corrente,
+            pagamenti_oggetti_gia_presentati,
+            pagamenti_oggetti_nuovi,
+        )
+
+        df_pagamenti_output = to_pandas_for_sheets(df_spark=df_pagamenti_all_spark)
+
+        export_to_sheets(
+            df_pagamenti_output,
+            creds,
+            SHEET_ID_NON_PERFEZIONATI_PAGAMENTO,
+            TAB_OUTPUT_NON_PERFEZIONATI_PAGAMENTO,
+        )
+
         job_end_dt = now_utc_dt()
         job_end_str = job_end_dt.strftime("%Y-%m-%d %H:%M:%S")
         job_elapsed_min = elapsed_minutes_str(job_start_dt, job_end_dt)
@@ -1542,6 +1649,23 @@ def main():
             count_post_distinct=bloccati_count_post_distinct,
         )
 
+        write_meta_tab(
+            creds=creds,
+            sheet_id=SHEET_ID_NON_PERFEZIONATI_PAGAMENTO,
+            tab_meta=TAB_META_NON_PERFEZIONATI_PAGAMENTO,
+            max_date_str=max_date_str,
+            start_run_str=job_start_str,
+            end_run_str=job_end_str,
+            elapsed_min_str=job_elapsed_min,
+            stato_run="OK",
+            righe_settimana_precedente=pagamenti_righe_settimana_precedente,
+            oggetti_comuni_settimana_precedente=pagamenti_oggetti_gia_presentati,
+            oggetti_nuovi_rispetto_precedente=pagamenti_oggetti_nuovi,
+            righe_settimana_corrente=pagamenti_righe_settimana_corrente,
+            count_pre_distinct=pagamenti_count_pre_distinct,
+            count_post_distinct=pagamenti_count_post_distinct,
+        )
+
         distinct_diff = count_pre_distinct - count_post_distinct
         if distinct_diff == 0:
             status_title = "✅✅✅ *SUCCESS* ✅✅✅"
@@ -1568,6 +1692,11 @@ def main():
             f"*Presentati correnti:* {bloccati_righe_settimana_corrente}\n"
             f"*Già presentati:* {bloccati_oggetti_gia_presentati}\n"
             f"*Nuovi:* {bloccati_oggetti_nuovi}\n"
+            f"\n*Cluster non perfezionati con evidenza di pagamento*\n"
+            f"*Precedente:* {pagamenti_righe_settimana_precedente}\n"
+            f"*Presentati correnti:* {pagamenti_righe_settimana_corrente}\n"
+            f"*Già presentati:* {pagamenti_oggetti_gia_presentati}\n"
+            f"*Nuovi:* {pagamenti_oggetti_nuovi}\n"
             f"*Ultimo aggiornamento dati:* {max_date_str}\n"
         )
 
@@ -1617,6 +1746,23 @@ def main():
                 count_pre_distinct=bloccati_count_pre_distinct,
                 count_post_distinct=bloccati_count_post_distinct,
             )
+
+            write_meta_tab(
+                creds=creds,
+                sheet_id=SHEET_ID_NON_PERFEZIONATI_PAGAMENTO,
+                tab_meta=TAB_META_NON_PERFEZIONATI_PAGAMENTO,
+                max_date_str=max_date_str,
+                start_run_str=job_start_str,
+                end_run_str=job_end_str,
+                elapsed_min_str=job_elapsed_min,
+                stato_run="KO",
+                righe_settimana_precedente=pagamenti_righe_settimana_precedente,
+                oggetti_comuni_settimana_precedente=pagamenti_oggetti_gia_presentati,
+                oggetti_nuovi_rispetto_precedente=pagamenti_oggetti_nuovi,
+                righe_settimana_corrente=pagamenti_righe_settimana_corrente,
+                count_pre_distinct=pagamenti_count_pre_distinct,
+                count_post_distinct=pagamenti_count_post_distinct,
+            )
         except Exception:
             logging.warning(
                 "Aggiornamento dei tab meta fallito durante la gestione errore."
@@ -1635,6 +1781,7 @@ def main():
 
     finally:
         for df_name, df_obj in [
+            ("df_pagamenti_all_spark", df_pagamenti_all_spark),
             ("df_bloccati_all_spark", df_bloccati_all_spark),
             ("df_da_perf_delta_spark", df_da_perf_delta_spark),
             ("df_da_perf_all_spark", df_da_perf_all_spark),
