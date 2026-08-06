@@ -535,20 +535,27 @@ def build_alert_messages(
         .reset_index(name="numero_oggetti")
     )
 
-    # Colonna tecnica usata esclusivamente per ordinare le giornate.
     riepilogo_df["_data_ordinamento"] = pd.to_datetime(
         riepilogo_df["data_rendicontazione_giorno"],
         errors="coerce",
     )
 
+    # Colonna tecnica usata esclusivamente per ordinare le giornate.
     riepilogo_df = riepilogo_df.sort_values(
         by=[
             "_data_ordinamento",
             "recapitista",
+            "numero_oggetti",
             "cap",
             "provincia",
         ],
-        ascending=[True, True, True, True],
+        ascending=[
+            True,  # giorno ASC
+            True,  # recapitista ASC
+            False,  # numero eventi DESC
+            True,  # CAP ASC
+            True,  # provincia ASC
+        ],
         na_position="last",
     )
 
