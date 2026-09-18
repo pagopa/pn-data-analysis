@@ -683,12 +683,29 @@ def build_query_sql() -> str:
                 ON sn.iun = p.iun
         ),
 
+        payment_timeline AS (
+            -- Recupera l'evidenza di pagamento dalla timeline SILVER per gli IUN del perimetro.
+            SELECT
+                tl.iun,
+                MAX(
+                    CAST(
+                        get_json_object(tl.details, '$.eventTimestamp')
+                        AS TIMESTAMP
+                    )
+                ) AS tms_payment_silver
+            FROM send.silver_timeline tl
+            INNER JOIN perimetro_iun p
+                ON tl.iun = p.iun
+            WHERE tl.category = 'PAYMENT'
+            GROUP BY tl.iun
+        ),
+
         temp_gold_notification_analytics AS (
             SELECT
                 n.iun,
                 n.tms_viewed,
                 n.tms_effective_date,
-                n.tms_date_payment,
+                n.tms_date_payment AS tms_payment_gold,
                 n.type_notif
             FROM send.gold_notification_analytics n
             INNER JOIN perimetro_iun p
@@ -761,7 +778,13 @@ def build_query_sql() -> str:
                     ELSE 0
                 END AS flag_feedback_attempt_0,
                 s.tms_cancelled,
-                n.tms_date_payment,
+                -- Mantiene il nome tms_date_payment usando la prima evidenza
+                -- disponibile tra GOLD e SILVER.
+                CASE
+                    WHEN n.tms_payment_gold IS NULL THEN pt.tms_payment_silver
+                    WHEN pt.tms_payment_silver IS NULL THEN n.tms_payment_gold
+                    ELSE LEAST(n.tms_payment_gold, pt.tms_payment_silver)
+                END AS tms_date_payment,
                 s.flag_wi7_consolidatore,
                 s.flag_wi7_report_postalizzazioni_incomplete,
                 s.wi7_cluster,
@@ -895,6 +918,8 @@ def build_query_sql() -> str:
                 ON sn.iun = s.iun
             LEFT JOIN temp_gold_notification_analytics n
                 ON s.iun = n.iun
+            LEFT JOIN payment_timeline pt
+                ON s.iun = pt.iun
             LEFT JOIN temp_analog_attempt a
                 ON CAST(s.attempt_number AS INT) = CAST(a.attempt_number_timeline AS INT)
             AND s.iun = a.iun
