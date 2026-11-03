@@ -7,7 +7,8 @@ import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from time import perf_counter
+from typing import Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import matplotlib
@@ -21,7 +22,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from matplotlib import font_manager
 from pdnd_google_utils import Sheet
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+from pyspark import StorageLevel
 from pyspark.sql import SparkSession
 
 # =============================================================================
@@ -46,7 +48,9 @@ OUTPUT_FILES = {
     "table": "SSDA-526_tabella_latest.png",
     "legend": "SSDA-526_colonna_colori_latest.png",
     "chart": "SSDA-526_grafico_latest.png",
+    "viewed_chart": "SSDA-526_grafico_visualizzazioni_latest.png",
     "combined": "SSDA-526_completo_latest.png",
+    "combined_viewed": "SSDA-526_completo_visualizzazioni_latest.png",
 }
 
 ROME_TZ = ZoneInfo("Europe/Rome")
@@ -62,34 +66,53 @@ TOTAL_TEXT_COLOR = "#FFFFFF"
 GRID_COLOR = "#B8C2CC"
 TEXT_COLOR = "#263238"
 OTHER_COLOR = "#D8C6E8"
+VIEWED_COLOR = "#087F8C"
+NOT_VIEWED_COLOR = "#D5DFE6"
+VIEWED_COLUMN = "numero_oggetti_con_notifica_visualizzata"
 
 PERIOD_COLUMN = "Data max deposito"
 LEGACY_PERIOD_COLUMN = "periodo_riferimento"
 FONT_FAMILY = "Montserrat"
-BASE_FONT_SIZE = 10.5
-NUMERIC_FONT_SIZE = 11.0
-TABLE_FIGSIZE = (10.8, 7.2)
+BASE_FONT_SIZE = 12.0
+NUMERIC_FONT_SIZE = 13.0
+TABLE_FIGSIZE = (13.2, 7.2)
 LEGEND_FIGSIZE = (0.8, 7.2)
 IMAGE_DPI = 180
 MONTSERRAT_FONT_PATH_ENV = "MONTSERRAT_FONT_PATH"
 
 # Label, nota e colore sono modificabili senza intervenire sulla logica SQL o sullo storico.
 
+CLUSTER_ORDER = [
+    "Errore rendicontazione/assenza eventi intermedi",
+    "Oggetto con rendicontazione corretta - Bloccato al primo attempt",
+    "Oggetto con rendicontazione corretta - Bloccato al secondo attempt",
+    "Oggetto rientrante in tavoli Duplicati / Non Rendicontabili",
+    "Oggetto fuori sla",
+    "Oggetto in corso di postalizzazione",
+]
+
+# I colori dei cluster invariati restano identici alla versione precedente.
+# Per i due nuovi cluster vengono riutilizzati due colori già presenti nella palette storica.
 CLUSTER_META: Dict[str, Dict[str, str]] = {
     "Errore rendicontazione/assenza eventi intermedi": {
         "label": "Oggetti con errori rendicontazione/assenza eventi intermedi",
         "footnote": "*",
         "color": "#c47182",
     },
-    "Oggetto bloccato al primo attempt": {
-        "label": "Oggetti bloccati al primo attempt",
+    "Oggetto con rendicontazione corretta - Bloccato al primo attempt": {
+        "label": "Rendicontazione corretta - Bloccati al primo attempt",
         "footnote": "",
         "color": "#F6D58A",
     },
-    "Oggetto con rendicontazione corretta da perfezionare": {
-        "label": "Oggetti con rendicontazione corretta da perfezionare",
+    "Oggetto con rendicontazione corretta - Bloccato al secondo attempt": {
+        "label": "Rendicontazione corretta - Bloccati al secondo attempt",
         "footnote": "",
         "color": "#8FAADC",
+    },
+    "Oggetto rientrante in tavoli Duplicati / Non Rendicontabili": {
+        "label": "Oggetti rientranti in tavoli Duplicati / Non Rendicontabili",
+        "footnote": "",
+        "color": "#42c3eb",
     },
     "Oggetto fuori sla": {
         "label": "Oggetti fuori SLA",
@@ -101,24 +124,15 @@ CLUSTER_META: Dict[str, Dict[str, str]] = {
         "footnote": "**",
         "color": "#92d050",
     },
-    "Oggetto non perfezionato con evidenza di pagamento": {
-        "label": "Oggetti non perfezionati con evidenza di pagamento",
-        "footnote": "",
-        "color": "#D8A7B1",
-    },
-    "Oggetto rientrante in tavoli Duplicati / Non Rendicontabili": {
-        "label": "Oggetti rientranti in tavoli Duplicati / Non Rendicontabili",
-        "footnote": "",
-        "color": "#42c3eb",
-    },
 }
 
-# Cluster storico della precedente classificazione a cinque righe. È mantenuto
-# esclusivamente per leggere gli snapshot preesistenti; non viene più prodotto.
+# Etichette legacy mantenute esclusivamente per leggere e ordinare gli snapshot
+# preesistenti; non vengono più prodotte dalla nuova baseline.
 LEGACY_CLUSTER_LABELS = {
-    "Oggetto con rendicontazione corretta in analisi Team Prodotto": (
-        "Oggetti con rendicontazione corretta in analisi Team Prodotto"
-    )
+    "Oggetto con rendicontazione corretta in analisi Team Prodotto": "Oggetti con rendicontazione corretta in analisi Team Prodotto",
+    "Oggetto bloccato al primo attempt": "Oggetti bloccati al primo attempt",
+    "Oggetto con rendicontazione corretta da perfezionare": "Oggetti con rendicontazione corretta da perfezionare",
+    "Oggetto non perfezionato con evidenza di pagamento": "Oggetti non perfezionati con evidenza di pagamento",
 }
 
 HISTORY_COLUMNS = [
@@ -128,6 +142,8 @@ HISTORY_COLUMNS = [
     PERIOD_COLUMN,
     "cluster_mancato_perfezionamento",
     "numero_oggetti",
+    VIEWED_COLUMN,
+    # Indicatore introdotto con la nuova baseline: gli snapshot legacy restano vuoti.
     # Metrica temporaneamente disabilitata, mantenuta come riferimento per un
     # eventuale ripristino futuro:
     # "oggetti_pagati",
@@ -273,22 +289,59 @@ def read_period_reference(sheet: Sheet) -> Tuple[str, pd.DataFrame]:
 
 def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
     """
-    Restituisce un aggregato con granularità di una riga per cluster.
+    Esegue SSDA-526 a fasi materializzate per evitare la ricostruzione ripetuta
+    dello stesso DAG Spark.
 
-    La metrica è COUNT(DISTINCT requestid). Le logiche di classificazione finali
-    restano quelle del job originario; l'ottimizzazione consiste nel delimitare
-    prima il perimetro GOLD, filtrare le SILVER prima dell'EXPLODE e usare insiemi
-    distinti/LEFT ANTI JOIN per evitare moltiplicazioni non necessarie.
+    L'ottimizzazione riguarda esclusivamente il piano di esecuzione:
+      1. GOLD filtrato materializzato una volta;
+      2. feedback analogico calcolato sul solo perimetro IUN;
+      3. perimetro senza feedback materializzato una volta;
+      4. SILVER postalizzazione letto una sola volta, con explode immediato di
+         eventslist e attachments e successivo riuso del dataset piatto;
+      5. aggregazione finale eseguita sui dataset intermedi già materializzati.
+
+    I log riportano inizio/fine, durata e cardinalità dei passaggi principali.
     """
-    logging.info("Esecuzione query Spark ottimizzata...")
 
-    query_sql = f"""
-        WITH gold_perimetro AS (
+    persisted = []
+    run_start = perf_counter()
+
+    def log_step_start(step: str) -> float:
+        logging.info("[SPARK] >>> %s", step)
+        return perf_counter()
+
+    def log_step_end(step: str, started_at: float, rows: Optional[int] = None) -> None:
+        elapsed = perf_counter() - started_at
+        if rows is None:
+            logging.info("[SPARK] <<< %s completato in %.1f s", step, elapsed)
+        else:
+            logging.info(
+                "[SPARK] <<< %s completato in %.1f s - righe=%s",
+                step,
+                elapsed,
+                f"{rows:,}".replace(",", "."),
+            )
+
+    def persist_and_materialize(
+        df, view_name: str, step: str, storage=StorageLevel.MEMORY_AND_DISK
+    ):
+        started = log_step_start(step)
+        cached = df.persist(storage)
+        persisted.append(cached)
+        cached.createOrReplaceTempView(view_name)
+        rows = cached.count()
+        log_step_end(step, started, rows)
+        return cached, rows
+
+    try:
+        # ------------------------------------------------------------------
+        # 1) GOLD: una sola scansione della tabella di partenza.
+        # ------------------------------------------------------------------
+        gold_sql = f"""
             SELECT
                 s.iun,
                 s.requestid,
                 s.prodotto,
-                s.data_deposito,
                 s.tentativo_recapito_stato,
                 s.tentativo_recapito_data,
                 s.messaingiacenza_recapito_stato,
@@ -296,114 +349,130 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 s.certificazione_recapito_dettagli,
                 s.certificazione_recapito_data,
                 s.demat_23l_ar_stato,
+                s.demat_23l_ar_data_rendicontazione,
                 s.demat_plico_stato,
+                s.demat_plico_data_rendicontazione,
+                CASE
+                    WHEN s.demat_23l_ar_data_rendicontazione IS NULL
+                     AND s.demat_plico_data_rendicontazione IS NULL THEN NULL
+                    WHEN s.demat_23l_ar_data_rendicontazione IS NOT NULL
+                     AND s.demat_plico_data_rendicontazione IS NULL THEN '23L_AR'
+                    WHEN s.demat_23l_ar_data_rendicontazione IS NULL
+                     AND s.demat_plico_data_rendicontazione IS NOT NULL THEN 'PLICO'
+                    WHEN s.demat_plico_data_rendicontazione
+                         > s.demat_23l_ar_data_rendicontazione THEN 'PLICO'
+                    ELSE '23L_AR'
+                END AS demat_documenttype_da_controllare,
                 s.demat_arcad_stato,
                 s.demat_arcad_data_rendicontazione,
                 s.fine_recapito_stato,
                 s.accettazione_23l_recag012_data,
-                s.tms_cancelled,
+                s.recindex_number,
                 s.flag_wi7_consolidatore,
                 s.flag_wi7_report_postalizzazioni_incomplete,
-                s.attempt_number,
-                s.attempt_rank,
-                s.pcretry_rank
+                s.attempt_number
             FROM send.gold_postalizzazione_analytics s
             WHERE s.scarto_consolidatore_stato IS NULL
-              AND s.ultimo_evento_stato NOT IN ('P008', 'P010', 'P011')
-              AND s.flag_prodotto_estero = 0
-              AND s.statusrequest NOT IN ('PN999', 'PN998')
+              AND COALESCE(s.statusrequest, '') NOT IN (
+                    'PN999', 'PN998', 'error', 'internalError', 'syntaxError',
+                    'transformationError', 'semanticError', 'authenticationError', 'duplicatedRequest'
+              )
               AND s.attempt_rank = 1
               AND s.pcretry_rank = 1
               AND s.tms_cancelled IS NULL
-              AND (
-                    s.certificazione_recapito_stato NOT IN (
-                        'RECRS006','RECRS013','RECRN006','RECRN013','RECAG004','RECAG013'
-                    )
-                    OR s.certificazione_recapito_stato IS NULL
+              AND COALESCE(s.certificazione_recapito_stato, '') NOT IN (
+                    'RECRS006','RECRS013','RECRN006','RECRN013','RECAG004','RECAG013'
               )
-              AND COALESCE(s.tentativo_recapito_stato, '') NOT IN ('PN998','PN999')
-              AND COALESCE(s.certificazione_recapito_stato, '') NOT IN ('PN998','PN999')
-              AND COALESCE(s.fine_recapito_stato, '') NOT IN ('PN998','PN999')
+              -- RS e RIS temporaneamente esclusi; restano pronti nei controlli.
+              AND s.prodotto IN ('AR', 'RIR', '890')
               AND s.data_deposito < '{data_max_deposito}'
-              AND COALESCE(s.certificazione_recapito_dettagli, '') <> 'M02'
-        ),
+        """
+        gold_base, gold_rows = persist_and_materialize(
+            spark.sql(gold_sql),
+            "ssda526_gold_base",
+            "1/7 GOLD filtrato e materializzato",
+        )
 
-        perimetro_requestid AS (
-            SELECT DISTINCT requestid
-            FROM gold_perimetro
-        ),
+        # ------------------------------------------------------------------
+        # 2) Perimetro IUN + SEND_ANALOG_FEEDBACK.
+        # ------------------------------------------------------------------
+        perim_iun, iun_rows = persist_and_materialize(
+            spark.sql(
+                "SELECT DISTINCT iun FROM ssda526_gold_base WHERE iun IS NOT NULL"
+            ),
+            "ssda526_perimetro_iun",
+            "2/7 Perimetro IUN materializzato",
+            StorageLevel.MEMORY_ONLY,
+        )
 
-        perimetro_iun AS (
-            SELECT DISTINCT iun
-            FROM gold_perimetro
-        ),
-
-        schedule_refinement_iun AS (
-            SELECT DISTINCT tl.iun
-            FROM send.silver_timeline tl
-            INNER JOIN perimetro_iun p
-                ON tl.iun = p.iun
-            WHERE tl.category = 'SCHEDULE_REFINEMENT'
-        ),
-
-        gold_senza_schedule_refinement AS (
-            SELECT g.*
-            FROM gold_perimetro g
-            LEFT ANTI JOIN schedule_refinement_iun sr
-                ON g.iun = sr.iun
-        ),
-
-        perimetro_requestid_finale AS (
-            SELECT DISTINCT requestid
-            FROM gold_senza_schedule_refinement
-        ),
-
-        perimetro_iun_finale AS (
-            SELECT DISTINCT iun
-            FROM gold_senza_schedule_refinement
-        ),
-
-        temp_analog_attempt AS (
+        feedback_sql = """
             SELECT DISTINCT
                 tl.iun,
-                CAST(
-                    REGEXP_EXTRACT(tl.timelineelementid, 'ATTEMPT_([0-9]+)', 1)
-                    AS INT
-                ) AS attempt_number_timeline
+                CAST(REGEXP_EXTRACT(tl.timelineelementid, 'RECINDEX_([0-9]+)', 1) AS INT) AS recindex_number,
+                CAST(REGEXP_EXTRACT(tl.timelineelementid, 'ATTEMPT_([0-9]+)', 1) AS INT) AS attempt_number
             FROM send.silver_timeline tl
-            INNER JOIN perimetro_iun_finale p
+            INNER JOIN ssda526_perimetro_iun p
                 ON tl.iun = p.iun
             WHERE tl.category = 'SEND_ANALOG_FEEDBACK'
-        ),
+        """
+        feedback, feedback_rows = persist_and_materialize(
+            spark.sql(feedback_sql),
+            "ssda526_feedback",
+            "3/7 Feedback analogici sul perimetro",
+        )
 
-        wi7_poste AS (
-            SELECT DISTINCT requestid
-            FROM send_dev.wi7_poste_da_escludere
-        ),
+        # ------------------------------------------------------------------
+        # 3) Perimetro definitivo: anti-join puntuale IUN+RECINDEX+ATTEMPT.
+        # ------------------------------------------------------------------
+        no_feedback_sql = """
+            SELECT gb.*
+            FROM ssda526_gold_base gb
+            LEFT ANTI JOIN ssda526_feedback saf
+              ON gb.iun = saf.iun
+             AND CAST(gb.recindex_number AS INT) = saf.recindex_number
+             AND CAST(gb.attempt_number AS INT) = saf.attempt_number
+        """
+        gold_no_feedback, no_feedback_rows = persist_and_materialize(
+            spark.sql(no_feedback_sql),
+            "gold_base_senza_feedback",
+            "4/7 GOLD senza feedback materializzato",
+        )
 
-        notification_perimetro AS (
+        logging.info(
+            "[SPARK] Perimetro feedback: GOLD=%s, feedback=%s, senza_feedback=%s, esclusi=%s",
+            f"{gold_rows:,}".replace(",", "."),
+            f"{feedback_rows:,}".replace(",", "."),
+            f"{no_feedback_rows:,}".replace(",", "."),
+            f"{max(gold_rows - no_feedback_rows, 0):,}".replace(",", "."),
+        )
+
+        # Non servono più: liberiamo memoria prima della parte SILVER più pesante.
+        gold_base.unpersist(blocking=False)
+        feedback.unpersist(blocking=False)
+        perim_iun.unpersist(blocking=False)
+
+        perim_requestid, requestid_rows = persist_and_materialize(
+            spark.sql(
+                "SELECT DISTINCT requestid FROM gold_base_senza_feedback "
+                "WHERE requestid IS NOT NULL"
+            ),
+            "ssda526_perimetro_requestid",
+            "5/7 Perimetro requestId materializzato",
+            StorageLevel.MEMORY_ONLY,
+        )
+
+        # ------------------------------------------------------------------
+        # 4) SILVER: UNA SOLA LETTURA. Il pruning del perimetro requestId
+        #    e' GIA' espresso nella INNER JOIN immediatamente prima dei
+        #    LATERAL VIEW: manteniamo questa posizione e l'explode immediato.
+        #    NON trasciniamo eventslist/attachments in CTE intermedie.
+        #    Un'ulteriore riscrittura non garantirebbe un piano fisico migliore;
+        #    il guadagno reale va verificato con EXPLAIN e metriche Spark.
+        #    Il persist riguarda soltanto il risultato piatto, riutilizzato.
+        # ------------------------------------------------------------------
+        silver_flat_sql = """
             SELECT
-                n.iun,
-                n.tms_viewed,
-                n.tms_effective_date,
-                n.tms_date_payment
-            FROM send.gold_notification_analytics n
-            INNER JOIN perimetro_iun_finale p
-                ON n.iun = p.iun
-        ),
-
-        silver_postalizzazione_perimetro AS (
-            SELECT
-                REGEXP_REPLACE(sp.requestid, '^pn-cons-000~', '') AS requestid,
-                sp.eventslist
-            FROM send.silver_postalizzazione sp
-            INNER JOIN perimetro_requestid_finale p
-                ON REGEXP_REPLACE(sp.requestid, '^pn-cons-000~', '') = p.requestid
-        ),
-
-        silver_eventi AS (
-            SELECT
-                sp.requestid,
+                REGEXP_REPLACE(p.requestid, '^pn-cons-000~', '') AS requestid,
                 e.paperprogrstatus.statuscode AS statuscode,
                 CASE
                     WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17 THEN CONCAT(
@@ -417,307 +486,456 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     )
                     ELSE e.paperprogrstatus.clientrequesttimestamp
                 END AS clientrequesttimestamp,
-                CASE
-                    WHEN e.paperprogrstatus.statuscode IN (
-                        'RECRN003C','RECRN004C','RECRN005C','RECRN001C','RECRN002C','RECRN002F',
-                        'RECAG001C','RECAG002C','RECAG003C','RECAG003F','RECAG005C','RECAG006C',
-                        'RECAG007C','RECAG008C'
-                    ) THEN 'FINE_RECAPITO'
-                    WHEN e.paperprogrstatus.statuscode IN (
-                        'RECRN003A','RECRN004A','RECRN005A','RECRN001A','RECRN002A','RECRN002D',
-                        'RECAG001A','RECAG002A','RECAG003A','RECAG003D','RECAG005A','RECAG006A',
-                        'RECAG007A','RECAG008A'
-                    ) THEN 'CERTIFICAZIONE_RECAPITO'
-                    ELSE NULL
-                END AS tipo
-            FROM silver_postalizzazione_perimetro sp
-            LATERAL VIEW EXPLODE(sp.eventslist) ev AS e
+                a.documenttype AS documenttype
+            FROM send.silver_postalizzazione p
+            INNER JOIN ssda526_perimetro_requestid pr
+                ON REGEXP_REPLACE(p.requestid, '^pn-cons-000~', '') = pr.requestid
+            LATERAL VIEW explode(p.eventslist) ev AS e
+            LATERAL VIEW OUTER explode(e.paperprogrstatus.attachments) av AS a
             WHERE e.paperprogrstatus.statuscode IN (
                 'RECRN001A','RECRN002A','RECRN002D','RECRN003A','RECRN004A','RECRN005A',
-                'RECAG001A','RECAG002A','RECAG003A','RECAG003D','RECAG005A','RECAG006A',
-                'RECAG007A','RECAG008A','RECRN001C','RECRN002C','RECRN002F','RECRN003C',
-                'RECRN004C','RECRN005C','RECAG001C','RECAG002C','RECAG003C','RECAG003F',
-                'RECAG005C','RECAG006C','RECAG007C','RECAG008C'
+                'RECAG001A','RECAG002A','RECAG003A','RECAG003D','RECAG005A','RECAG006A','RECAG007A','RECAG008A',
+                'RECRI003A','RECRI004A',
+                'RECRN001C','RECRN002C','RECRN002F','RECRN003C','RECRN004C','RECRN005C',
+                'RECAG001C','RECAG002C','RECAG003C','RECAG003F','RECAG005C','RECAG006C','RECAG007C','RECAG008C',
+                'RECRI003C','RECRI004C',
+                'RECRN001B','RECRN002B','RECRN002E','RECRN003B','RECRN004B','RECRN005B',
+                'RECAG001B','RECAG002B','RECAG003B','RECAG003E','RECAG005B','RECAG006B','RECAG007B','RECAG008B',
+                'RECRI003B','RECRI004B'
+                -- RS/RIS restano pronti nei CASE business e vanno riattivati insieme al perimetro prodotto.
             )
-        ),
+            OR a.documenttype IN ('23L', 'AR')
+        """
+        silver_flat, silver_rows = persist_and_materialize(
+            spark.sql(silver_flat_sql),
+            "ssda526_silver_flat",
+            "6/7 SILVER esploso e materializzato (unica scansione)",
+        )
+        logging.info(
+            "[SPARK] SILVER piatto: requestId_perimetro=%s, righe_evento/attachment=%s",
+            f"{requestid_rows:,}".replace(",", "."),
+            f"{silver_rows:,}".replace(",", "."),
+        )
+        # Il perimetro requestId ha ormai esaurito il suo scopo.
+        perim_requestid.unpersist(blocking=False)
 
-        silver_eventi_ranked AS (
+        # Gli ultimi eventi A/B/C derivano dal dataset piatto già materializzato.
+        latest_events_sql = """
+            WITH classificati AS (
+                SELECT
+                    requestid,
+                    statuscode,
+                    statusdatetime,
+                    clientrequesttimestamp,
+                    CASE
+                        WHEN statuscode IN (
+                            'RECRN001C','RECRN002C','RECRN002F','RECRN003C','RECRN004C','RECRN005C',
+                            'RECAG001C','RECAG002C','RECAG003C','RECAG003F','RECAG005C','RECAG006C','RECAG007C','RECAG008C',
+                            'RECRI003C','RECRI004C'
+                        ) THEN 'FINE_RECAPITO'
+                        WHEN statuscode IN (
+                            'RECRN001A','RECRN002A','RECRN002D','RECRN003A','RECRN004A','RECRN005A',
+                            'RECAG001A','RECAG002A','RECAG003A','RECAG003D','RECAG005A','RECAG006A','RECAG007A','RECAG008A',
+                            'RECRI003A','RECRI004A'
+                        ) THEN 'CERTIFICAZIONE_RECAPITO'
+                        WHEN statuscode IN (
+                            'RECRN001B','RECRN002B','RECRN002E','RECRN003B','RECRN004B','RECRN005B',
+                            'RECAG001B','RECAG002B','RECAG003B','RECAG003E','RECAG005B','RECAG006B','RECAG007B','RECAG008B',
+                            'RECRI003B','RECRI004B'
+                        ) THEN 'DEMAT_RECAPITO'
+                        ELSE NULL
+                    END AS tipo
+                FROM ssda526_silver_flat
+                WHERE statuscode IS NOT NULL
+            ),
+            ranked AS (
+                SELECT
+                    requestid,
+                    statuscode,
+                    statusdatetime,
+                    clientrequesttimestamp,
+                    tipo,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY requestid, tipo
+                        ORDER BY clientrequesttimestamp DESC
+                    ) AS rn
+                FROM classificati
+                WHERE tipo IS NOT NULL
+            )
             SELECT
                 requestid,
-                statuscode,
-                statusdatetime,
-                clientrequesttimestamp,
-                tipo,
-                ROW_NUMBER() OVER (
-                    PARTITION BY requestid, tipo
-                    ORDER BY clientrequesttimestamp DESC
-                ) AS rn
-            FROM silver_eventi
-        ),
-
-        ultimi_eventi_silver AS (
-            SELECT
-                requestid,
-                MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN statuscode END) AS fine_recapito_stato_silver,
-                MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN statusdatetime END) AS fine_recapito_data_silver,
-                MAX(CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statuscode END) AS certificazione_recapito_stato_silver,
-                MAX(CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statusdatetime END) AS certificazione_recapito_data_silver
-            FROM silver_eventi_ranked
+                MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN statuscode END) AS fine_recapito_stato,
+                MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN statusdatetime END) AS fine_recapito_data,
+                MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN clientrequesttimestamp END) AS fine_recapito_rendicontazione,
+                MAX(CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statuscode END) AS certificazione_recapito_stato,
+                MAX(CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statusdatetime END) AS certificazione_recapito_data,
+                MAX(CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN clientrequesttimestamp END) AS certificazione_recapito_rendicontazione,
+                MAX(CASE WHEN tipo = 'DEMAT_RECAPITO' THEN statuscode END) AS demat_recapito_stato,
+                MAX(CASE WHEN tipo = 'DEMAT_RECAPITO' THEN statusdatetime END) AS demat_recapito_data,
+                MAX(CASE WHEN tipo = 'DEMAT_RECAPITO' THEN clientrequesttimestamp END) AS demat_recapito_rendicontazione
+            FROM ranked
             WHERE rn = 1
             GROUP BY requestid
+        """
+        latest_events, latest_rows = persist_and_materialize(
+            spark.sql(latest_events_sql),
+            "temp_ultimi_eventi_silver_postalizzazione",
+            "6b/7 Ultimi eventi SILVER per requestId",
+        )
+
+        # DocumentType: stesso criterio della versione di input, ma senza una nuova
+        # lettura di silver_postalizzazione.
+        temp_demat_sql = """
+            SELECT requestid, documenttype, rn_demat
+            FROM (
+                SELECT
+                    requestid,
+                    documenttype,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY requestid
+                        ORDER BY clientrequesttimestamp DESC
+                    ) AS rn_demat
+                FROM ssda526_silver_flat
+                WHERE documenttype IN ('23L', 'AR')
+            ) x
+        """
+        temp_demat, demat_rows = persist_and_materialize(
+            spark.sql(temp_demat_sql),
+            "temp_demat",
+            "6c/7 DocumentType DEMAT dal SILVER già esploso",
+            StorageLevel.MEMORY_ONLY,
+        )
+        logging.info(
+            "[SPARK] Derivazioni SILVER: ultimi_eventi=%s, righe_demat=%s",
+            f"{latest_rows:,}".replace(",", "."),
+            f"{demat_rows:,}".replace(",", "."),
+        )
+        # Ora entrambe le derivazioni necessarie sono materializzate: il dataset
+        # SILVER piatto può essere liberato prima dei controlli finali.
+        silver_flat.unpersist(blocking=False)
+
+        wi7 = spark.sql(
+            "SELECT DISTINCT requestid FROM send_dev.wi7_poste_da_escludere"
+        )
+        wi7.createOrReplaceTempView("wi7_poste")
+
+        # ------------------------------------------------------------------
+        # 5) Controlli e classificazione: logica business invariata.
+        # ------------------------------------------------------------------
+        final_started = log_step_start(
+            "7/7 Controlli business, classificazione e aggregazione"
+        )
+        final_sql = """
+            WITH
+        -- Il timestamp e' della notifica (IUN), mentre il conteggio finale
+        -- rimane per postalizzazione (requestid). Raggruppiamo preventivamente
+        -- per IUN per impedire moltiplicazioni nella LEFT JOIN.
+        perimetro_notifiche AS (
+            SELECT DISTINCT iun
+            FROM gold_base_senza_feedback
+            WHERE iun IS NOT NULL
         ),
-
-        controlli AS (
+        notifiche_visualizzate AS (
+            SELECT n.iun,
+                   MAX(CASE WHEN n.tms_viewed IS NOT NULL THEN 1 ELSE 0 END)
+                       AS flag_notifica_visualizzata
+            FROM send.gold_notification_analytics n
+            INNER JOIN perimetro_notifiche p ON n.iun = p.iun
+            GROUP BY n.iun
+        ),
+        temp_controlli AS (
             SELECT
-                g.iun,
-                g.requestid,
-                g.prodotto,
-                g.tentativo_recapito_stato,
-                g.tentativo_recapito_data,
-                g.messaingiacenza_recapito_stato,
-                g.certificazione_recapito_stato,
-                g.certificazione_recapito_dettagli,
-                g.certificazione_recapito_data,
-                g.demat_23l_ar_stato,
-                g.demat_plico_stato,
-                g.demat_arcad_stato,
-                g.demat_arcad_data_rendicontazione,
-                g.fine_recapito_stato,
-                g.accettazione_23l_recag012_data,
-                g.flag_wi7_consolidatore,
-                g.flag_wi7_report_postalizzazioni_incomplete,
-                n.tms_date_payment,
+                -- Manteniamo solo i campi necessari ai controlli e alla classificazione.
+                s.requestid,
+                -- Il flag nasce dalla GOLD notifiche, aggregata per IUN nella CTE
+                -- notifiche_visualizzate. Qui l'alias n e' effettivamente disponibile.
+                COALESCE(n.flag_notifica_visualizzata, 0) AS flag_notifica_visualizzata,
+                s.prodotto,
+                s.tentativo_recapito_stato,
+                s.tentativo_recapito_data,
+                s.messaingiacenza_recapito_stato,
+                s.certificazione_recapito_stato,
+                s.certificazione_recapito_dettagli,
+                s.certificazione_recapito_data,
+                s.demat_23l_ar_stato,
+                s.demat_plico_stato,
+                s.demat_documenttype_da_controllare,
+                s.demat_arcad_stato,
+                s.demat_arcad_data_rendicontazione,
+                s.fine_recapito_stato,
+                s.accettazione_23l_recag012_data,
+                s.flag_wi7_consolidatore,
+                s.flag_wi7_report_postalizzazioni_incomplete,
                 CASE WHEN w.requestid IS NOT NULL THEN 1 ELSE 0 END AS flag_wi7_poste,
-                LEAST(
-                    COALESCE(n.tms_viewed, n.tms_effective_date),
-                    COALESCE(n.tms_effective_date, n.tms_viewed)
-                ) AS tms_perfezionamento_notification,
+                s.attempt_number,
                 CASE
-                    WHEN a.attempt_number_timeline = 0
-                     AND CAST(g.attempt_number AS INT) = 0 THEN 1
+                    WHEN s.certificazione_recapito_dettagli IN ('M02') THEN 1
                     ELSE 0
-                END AS flag_feedback_attempt_0,
-
+                END AS flag_destinatario_deceduto,
                 CASE
-                    WHEN g.certificazione_recapito_stato NOT IN (
-                        'RECRS002A','RECRN002A','RECAG003A','RECRS002D','RECRN002D','RECAG003D'
-                    )
-                    AND g.certificazione_recapito_dettagli IN (
-                        'M01','M03','M04','M02','M05','M06','M07','M08','M09'
-                    ) THEN 1
-                    WHEN g.certificazione_recapito_stato IN (
-                        'RECRS002A','RECRN002A','RECAG003A'
-                    )
-                    AND (
-                        g.certificazione_recapito_dettagli NOT IN ('M02','M05','M06','M07','M08','M09')
-                        OR g.certificazione_recapito_dettagli IS NULL
-                    ) THEN 1
-                    WHEN g.certificazione_recapito_stato IN (
-                        'RECRS002D','RECRN002D','RECAG003D'
-                    )
-                    AND (
-                        g.certificazione_recapito_dettagli NOT IN ('M01','M03','M04')
-                        OR g.certificazione_recapito_dettagli IS NULL
-                    ) THEN 1
-                    ELSE 0
-                END AS controllo_causale,
-
+                        WHEN s.certificazione_recapito_stato IN ('RECRI004A','RECRSI004A')
+                            AND s.certificazione_recapito_dettagli IS NULL THEN 1
+                        WHEN s.certificazione_recapito_stato NOT IN ('RECRS002A','RECRN002A','RECAG003A','RECRS002D','RECRN002D','RECAG003D','RECRI004A','RECRSI004A')
+                            AND s.certificazione_recapito_dettagli IN ('M01','M02','M03','M04','M05','M06','M07','M08','M09') THEN 1
+                        WHEN s.certificazione_recapito_stato IN ('RECRS002A', 'RECRN002A', 'RECAG003A')
+                            AND (
+                                s.certificazione_recapito_dettagli NOT IN ('M02', 'M05', 'M06', 'M07', 'M08', 'M09')
+                                OR s.certificazione_recapito_dettagli IS NULL
+                            ) THEN 1
+                        WHEN s.certificazione_recapito_stato IN ('RECRS002D', 'RECRN002D', 'RECAG003D')
+                            AND (
+                                s.certificazione_recapito_dettagli NOT IN ('M01', 'M03', 'M04')
+                                OR s.certificazione_recapito_dettagli IS NULL
+                            ) THEN 1
+                        ELSE 0
+                    END AS controllo_causale,
                 CASE
-                    WHEN g.certificazione_recapito_stato IN ('RECRN003A','RECRN004A','RECRN005A')
-                     AND (g.tentativo_recapito_stato = 'RECRN010' OR g.tentativo_recapito_stato IS NULL) THEN 0
-                    WHEN g.certificazione_recapito_stato IN ('RECRS003A','RECRS004A','RECRS005A')
-                     AND (g.tentativo_recapito_stato = 'RECRS010' OR g.tentativo_recapito_stato IS NULL) THEN 0
-                    WHEN g.certificazione_recapito_stato IN ('RECAG005A','RECAG006A','RECAG007A','RECAG008A')
-                     AND (g.tentativo_recapito_stato = 'RECAG010' OR g.tentativo_recapito_stato IS NULL) THEN 0
-                    WHEN g.certificazione_recapito_stato NOT IN (
-                        'RECRN003A','RECRN004A','RECRN005A','RECAG005A','RECRS003A',
-                        'RECRS004A','RECRS005A','RECAG006A','RECAG007A','RECAG008A'
-                    )
-                     AND g.tentativo_recapito_stato = g.certificazione_recapito_stato THEN 0
-                    ELSE 1
-                END AS controllo_inesito_casi_giacenza,
-
+                        WHEN s.prodotto IN ('RIR','RIS') THEN 0
+                        WHEN s.certificazione_recapito_stato IN ('RECRN003A', 'RECRN004A', 'RECRN005A')
+                            AND (s.tentativo_recapito_stato = 'RECRN010' OR s.tentativo_recapito_stato IS NULL) THEN 0
+                        WHEN s.certificazione_recapito_stato IN ('RECRS003C', 'RECRS004A', 'RECRS005A')
+                            AND (s.tentativo_recapito_stato = 'RECRS010' OR s.tentativo_recapito_stato IS NULL) THEN 0
+                        WHEN s.certificazione_recapito_stato IN ('RECAG005A','RECAG006A','RECAG007A','RECAG008A')
+                            AND (s.tentativo_recapito_stato = 'RECAG010' OR s.tentativo_recapito_stato IS NULL) THEN 0
+                        WHEN s.certificazione_recapito_stato NOT IN ('RECRN003A','RECRN004A','RECRN005A','RECAG005A','RECRS003C','RECRS004A','RECRS005A','RECAG006A','RECAG007A','RECAG008A')
+                            AND s.tentativo_recapito_stato = s.certificazione_recapito_stato THEN 0
+                        ELSE 1
+                    END AS controllo_inesito_casi_giacenza,
                 CASE
-                    WHEN g.certificazione_recapito_stato = 'RECRN001A'
-                     AND (g.demat_23l_ar_stato = 'RECRN001B' OR g.demat_plico_stato = 'RECRN001B' OR g.demat_arcad_stato = 'RECRN001B')
-                     AND s.fine_recapito_stato_silver = 'RECRN001C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECRN002A'
-                     AND (g.demat_23l_ar_stato = 'RECRN002B' OR g.demat_plico_stato = 'RECRN002B' OR g.demat_arcad_stato = 'RECRN002B')
-                     AND s.fine_recapito_stato_silver = 'RECRN002C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECRN002D'
-                     AND (g.demat_23l_ar_stato = 'RECRN002E' OR g.demat_plico_stato = 'RECRN002E' OR g.demat_arcad_stato = 'RECRN002E')
-                     AND s.fine_recapito_stato_silver = 'RECRN002F' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECRN003A'
-                     AND (g.demat_23l_ar_stato = 'RECRN003B' OR g.demat_plico_stato = 'RECRN003B' OR g.demat_arcad_stato = 'RECRN003B')
-                     AND s.fine_recapito_stato_silver = 'RECRN003C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECRN004A'
-                     AND (g.demat_23l_ar_stato = 'RECRN004B' OR g.demat_plico_stato = 'RECRN004B' OR g.demat_arcad_stato = 'RECRN004B')
-                     AND s.fine_recapito_stato_silver = 'RECRN004C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECRN005A'
-                     AND (g.demat_23l_ar_stato = 'RECRN005B' OR g.demat_plico_stato = 'RECRN005B' OR g.demat_arcad_stato = 'RECRN005B')
-                     AND s.fine_recapito_stato_silver = 'RECRN005C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECAG001A'
-                     AND (g.demat_23l_ar_stato = 'RECAG001B' OR g.demat_plico_stato = 'RECAG001B' OR g.demat_arcad_stato = 'RECAG001B')
-                     AND s.fine_recapito_stato_silver = 'RECAG001C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECAG002A'
-                     AND (g.demat_23l_ar_stato = 'RECAG002B' OR g.demat_plico_stato = 'RECAG002B' OR g.demat_arcad_stato = 'RECAG002B')
-                     AND s.fine_recapito_stato_silver = 'RECAG002C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECAG003A'
-                     AND (g.demat_23l_ar_stato = 'RECAG003B' OR g.demat_plico_stato = 'RECAG003B' OR g.demat_arcad_stato = 'RECAG003B')
-                     AND s.fine_recapito_stato_silver = 'RECAG003C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECAG003D'
-                     AND (g.demat_23l_ar_stato = 'RECAG003E' OR g.demat_plico_stato = 'RECAG003E' OR g.demat_arcad_stato = 'RECAG003E')
-                     AND s.fine_recapito_stato_silver = 'RECAG003F' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECAG005A'
-                     AND (
-                        g.demat_23l_ar_stato IN ('RECAG011B','RECAG005B')
-                        OR g.demat_plico_stato IN ('RECAG011B','RECAG005B')
-                        OR g.demat_arcad_stato IN ('RECAG011B','RECAG005B')
-                     )
-                     AND s.fine_recapito_stato_silver = 'RECAG005C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECAG006A'
-                     AND (
-                        g.demat_23l_ar_stato IN ('RECAG011B','RECAG006B')
-                        OR g.demat_plico_stato IN ('RECAG011B','RECAG006B')
-                        OR g.demat_arcad_stato IN ('RECAG011B','RECAG006B')
-                     )
-                     AND s.fine_recapito_stato_silver = 'RECAG006C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECAG007A'
-                     AND (
-                        g.demat_23l_ar_stato IN ('RECAG011B','RECAG007B')
-                        OR g.demat_plico_stato IN ('RECAG011B','RECAG007B')
-                        OR g.demat_arcad_stato IN ('RECAG011B','RECAG007B')
-                     )
-                     AND s.fine_recapito_stato_silver = 'RECAG007C' THEN 0
-                    WHEN g.certificazione_recapito_stato = 'RECAG008A'
-                     AND (
-                        g.demat_23l_ar_stato IN ('RECAG011B','RECAG008B')
-                        OR g.demat_plico_stato IN ('RECAG011B','RECAG008B')
-                        OR g.demat_arcad_stato IN ('RECAG011B','RECAG008B')
-                     )
-                     AND s.fine_recapito_stato_silver = 'RECAG008C' THEN 0
-                    ELSE 1
-                END AS controllo_tripletta,
-
+                        -- Casi con solo stato finale: non si richiede una tripletta A/B/C.
+                        WHEN s.fine_recapito_stato IN ('RECRS001C','RECRS003C', 'RECRSI003C') THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRN001A'
+                                AND (s.demat_23l_ar_stato = 'RECRN001B' OR s.demat_plico_stato = 'RECRN001B' OR s.demat_arcad_stato = 'RECRN001B')
+                                AND t.fine_recapito_stato = 'RECRN001C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRN002A'
+                                AND (s.demat_23l_ar_stato = 'RECRN002B' OR s.demat_plico_stato = 'RECRN002B' OR s.demat_arcad_stato = 'RECRN002B')
+                                AND t.fine_recapito_stato = 'RECRN002C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRN002D'
+                                AND (s.demat_23l_ar_stato = 'RECRN002E' OR s.demat_plico_stato = 'RECRN002E' OR s.demat_arcad_stato = 'RECRN002E')
+                                AND t.fine_recapito_stato = 'RECRN002F' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRN003A'
+                                AND (s.demat_23l_ar_stato = 'RECRN003B' OR s.demat_plico_stato = 'RECRN003B' OR s.demat_arcad_stato = 'RECRN003B')
+                                AND t.fine_recapito_stato = 'RECRN003C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRN004A'
+                                AND (s.demat_23l_ar_stato = 'RECRN004B' OR s.demat_plico_stato = 'RECRN004B' OR s.demat_arcad_stato = 'RECRN004B')
+                                AND t.fine_recapito_stato = 'RECRN004C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRN005A'
+                                AND (s.demat_23l_ar_stato = 'RECRN005B' OR s.demat_plico_stato = 'RECRN005B' OR s.demat_arcad_stato = 'RECRN005B')
+                                AND t.fine_recapito_stato = 'RECRN005C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECAG001A'
+                                AND (s.demat_23l_ar_stato = 'RECAG001B' OR s.demat_plico_stato = 'RECAG001B' OR s.demat_arcad_stato = 'RECAG001B')
+                                AND t.fine_recapito_stato = 'RECAG001C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECAG002A'
+                                AND (s.demat_23l_ar_stato = 'RECAG002B' OR s.demat_plico_stato = 'RECAG002B' OR s.demat_arcad_stato = 'RECAG002B')
+                                AND t.fine_recapito_stato = 'RECAG002C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECAG003A'
+                                AND (s.demat_23l_ar_stato = 'RECAG003B' OR s.demat_plico_stato = 'RECAG003B' OR s.demat_arcad_stato = 'RECAG003B')
+                                AND t.fine_recapito_stato = 'RECAG003C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECAG003D'
+                                AND (s.demat_23l_ar_stato = 'RECAG003E' OR s.demat_plico_stato = 'RECAG003E' OR s.demat_arcad_stato = 'RECAG003E')
+                                AND t.fine_recapito_stato = 'RECAG003F' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECAG005A'
+                                AND (
+                                    s.demat_23l_ar_stato IN ('RECAG011B', 'RECAG005B')
+                                    OR s.demat_plico_stato IN ('RECAG011B', 'RECAG005B')
+                                    OR s.demat_arcad_stato IN ('RECAG011B', 'RECAG005B')
+                                )
+                                AND t.fine_recapito_stato = 'RECAG005C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECAG006A'
+                                AND (
+                                    s.demat_23l_ar_stato IN ('RECAG011B', 'RECAG006B')
+                                    OR s.demat_plico_stato IN ('RECAG011B', 'RECAG006B')
+                                    OR s.demat_arcad_stato IN ('RECAG011B', 'RECAG006B')
+                                )
+                                AND t.fine_recapito_stato = 'RECAG006C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECAG007A'
+                                AND (
+                                    s.demat_23l_ar_stato IN ('RECAG011B', 'RECAG007B')
+                                    OR s.demat_plico_stato IN ('RECAG011B', 'RECAG007B')
+                                    OR s.demat_arcad_stato IN ('RECAG011B', 'RECAG007B')
+                                )
+                                AND t.fine_recapito_stato = 'RECAG007C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECAG008A'
+                                AND (
+                                    s.demat_23l_ar_stato IN ('RECAG011B', 'RECAG008B')
+                                    OR s.demat_plico_stato IN ('RECAG011B', 'RECAG008B')
+                                    OR s.demat_arcad_stato IN ('RECAG011B', 'RECAG008B')
+                                )
+                                AND t.fine_recapito_stato = 'RECAG008C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRS002A'
+                                AND (s.demat_23l_ar_stato = 'RECRS002B' OR s.demat_plico_stato = 'RECRS002B' OR s.demat_arcad_stato = 'RECRS002B')
+                                AND t.fine_recapito_stato = 'RECRS002C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRS002D'
+                                AND (s.demat_23l_ar_stato = 'RECRS002E' OR s.demat_plico_stato = 'RECRS002E' OR s.demat_arcad_stato = 'RECRS002E')
+                                AND t.fine_recapito_stato = 'RECRS002F' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRS004A'
+                                AND (s.demat_23l_ar_stato = 'RECRS004B' OR s.demat_plico_stato = 'RECRS004B' OR s.demat_arcad_stato = 'RECRS004B')
+                                AND t.fine_recapito_stato = 'RECRS004C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRS005A'
+                                AND (s.demat_23l_ar_stato = 'RECRS005B' OR s.demat_plico_stato = 'RECRS005B' OR s.demat_arcad_stato = 'RECRS005B')
+                                AND t.fine_recapito_stato = 'RECRS005C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRSI004A'
+                                AND (s.demat_23l_ar_stato = 'RECRSI004B' OR s.demat_plico_stato = 'RECRSI004B' OR s.demat_arcad_stato = 'RECRSI004B')
+                                AND t.fine_recapito_stato = 'RECRSI004C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRI003A'
+                                AND (s.demat_23l_ar_stato = 'RECRI003B' OR s.demat_plico_stato = 'RECRI003B' OR s.demat_arcad_stato = 'RECRI003B')
+                                AND t.fine_recapito_stato = 'RECRI003C' THEN 0
+                        WHEN s.certificazione_recapito_stato = 'RECRI004A'
+                                AND (s.demat_23l_ar_stato = 'RECRI004B' OR s.demat_plico_stato = 'RECRI004B' OR s.demat_arcad_stato = 'RECRI004B')
+                                AND t.fine_recapito_stato = 'RECRI004C' THEN 0
+                        ELSE 1
+                    END AS controllo_tripletta,
                 CASE
-                    WHEN CAST(s.certificazione_recapito_data_silver AS TIMESTAMP)
-                       = CAST(s.fine_recapito_data_silver AS TIMESTAMP) THEN 0
+                    -- Casi business in cui è prevista la sola data di fine recapito.
+                    WHEN s.fine_recapito_stato IN ('RECRS001C','RECRS003C', 'RECRSI003C') THEN 0
+                    WHEN CAST(t.certificazione_recapito_data AS TIMESTAMP) = CAST(t.demat_recapito_data AS TIMESTAMP)
+                         AND CAST(t.demat_recapito_data AS TIMESTAMP) = CAST(t.fine_recapito_data AS TIMESTAMP) THEN 0
                     ELSE 1
                 END AS controllo_date_business,
-
                 CASE
-                    WHEN g.certificazione_recapito_stato = 'RECRN005A'
-                     AND DATEDIFF(
-                        CAST(g.certificazione_recapito_data AS DATE),
-                        CAST(g.tentativo_recapito_data AS DATE)
-                     ) < 30 THEN 1
-                    ELSE 0
-                END AS controllo_tempistiche_compiuta_giacenza,
+                        WHEN s.certificazione_recapito_stato IN ('RECRS005A','RECRN005A')
+                        AND DATEDIFF(
+                            CAST(s.certificazione_recapito_data AS DATE),
+                            CAST(s.tentativo_recapito_data AS DATE)
+                        ) < 30 THEN 1
+                        ELSE 0
+                    END AS controllo_tempistiche_compiuta_giacenza,
+                   CASE
+                        -- Controllo solo la famiglia DEMAT con data di rendicontazione più recente.
+                        WHEN (
+                            s.demat_documenttype_da_controllare = '23L_AR'
+                            AND s.demat_23l_ar_stato IS NOT NULL
+                            AND s.demat_23l_ar_stato NOT IN (
+                                'RECRN001B','RECRN003B',
+                                'RECAG001B','RECAG002B','RECAG005B','RECAG006B',
+                                'RECAG007B','RECAG008B','RECAG011B',
+                                'RECRI003B'
+                            )
+                        ) THEN 1
+                        WHEN (
+                            s.demat_documenttype_da_controllare = 'PLICO'
+                            AND s.demat_plico_stato IS NOT NULL
+                            AND s.demat_plico_stato NOT IN (
+                                -- RS temporaneamente escluso: 'RECRS002B','RECRS002E','RECRS004B','RECRS005B',
+                                'RECRN002B','RECRN002E','RECRN004B','RECRN005B',
+                                'RECAG003B','RECAG003E','RECAG007B','RECAG008B','RECAG011B',
+                                'RECRI004B'
+                                -- RIS temporaneamente escluso: 'RECRSI004B'
+                            )
+                        ) THEN 1
+                        WHEN s.prodotto = '890' AND d.documenttype = '23L' THEN 0
+                        WHEN s.prodotto IN ('AR', 'RIR') AND d.documenttype = 'AR' THEN 0
+                        WHEN d.documenttype IS NULL THEN 0
+                        ELSE 1
+                    END AS controllo_documentType
+            FROM gold_base_senza_feedback s
+            LEFT JOIN notifiche_visualizzate n
+                ON s.iun = n.iun
+            LEFT JOIN temp_demat d
+                ON d.requestid = s.requestid
+            AND d.rn_demat = 1
+            LEFT JOIN temp_ultimi_eventi_silver_postalizzazione t
+                ON s.requestid = t.requestid
+            LEFT JOIN wi7_poste w
+                ON s.requestid = w.requestid
+        ),
 
+        temp_postalizzazione AS (
+            SELECT
+                s.*,
                 IF(
-                    g.fine_recapito_stato IN (
+                    fine_recapito_stato IN (
                         'RECRS003C','RECRS004C','RECRS005C','RECRN003C','RECRN004C','RECRN005C',
                         'RECAG005C','RECAG006C','RECAG007C','RECAG008C'
                     )
-                    AND g.tentativo_recapito_stato IS NULL,
+                    AND tentativo_recapito_stato IS NULL,
                     1, 0
                 ) AS assenza_inesito,
-
                 IF(
-                    g.fine_recapito_stato IN (
+                    fine_recapito_stato IN (
                         'RECRS003C','RECRS004C','RECRS005C','RECRN003C','RECRN004C','RECRN005C',
                         'RECAG005C','RECAG006C','RECAG007C','RECAG008C'
                     )
-                    AND g.messaingiacenza_recapito_stato IS NULL,
+                    AND messaingiacenza_recapito_stato IS NULL,
                     1, 0
                 ) AS assenza_messa_in_giacenza,
-
-                IF(g.certificazione_recapito_stato IS NULL, 1, 0) AS assenza_pre_esito,
-
+                IF(certificazione_recapito_stato IS NULL, 1, 0) AS assenza_pre_esito,
                 IF(
-                    (
-                        g.fine_recapito_stato IN ('RECAG008C')
-                        AND (g.demat_23l_ar_stato IS NULL OR g.demat_plico_stato IS NULL)
-                    )
-                    OR (
-                        g.demat_23l_ar_stato IS NULL
-                        AND g.demat_plico_stato IS NULL
-                    ),
-                    1, 0
-                ) AS assenza_dematerializzazione_23l_ar_plico,
-
+                        fine_recapito_stato NOT IN ('RECRS001C','RECRS003C', 'RECRSI003C')
+                        AND (
+                            (
+                                fine_recapito_stato IN ('RECAG008C')
+                                AND (
+                                    demat_23l_ar_stato IS NULL
+                                    OR demat_plico_stato IS NULL
+                                )
+                            )
+                            OR (
+                                demat_23l_ar_stato IS NULL
+                                AND demat_plico_stato IS NULL
+                            )
+                        ),
+                        1,
+                        0
+                    ) AS assenza_dematerializzazione_23l_ar_plico,
                 IF(
-                    g.prodotto = '890'
-                    AND g.fine_recapito_stato IN ('RECAG005C','RECAG006C','RECAG007C','RECAG008C')
-                    AND g.demat_arcad_data_rendicontazione IS NULL,
+                    prodotto = '890'
+                    AND fine_recapito_stato IN ('RECAG005C','RECAG006C','RECAG007C','RECAG008C')
+                    AND demat_arcad_data_rendicontazione IS NULL,
                     1, 0
-                ) AS assenza_demat_arcad,
-
+                ) AS assenza_demat_ARCAD,
                 IF(
-                    g.prodotto = '890'
-                    AND g.fine_recapito_stato IN ('RECAG005C','RECAG006C','RECAG007C','RECAG008C')
-                    AND g.accettazione_23l_recag012_data IS NULL,
+                    prodotto = '890'
+                    AND fine_recapito_stato IN ('RECAG005C','RECAG006C','RECAG007C','RECAG008C')
+                    AND accettazione_23l_recag012_data IS NULL,
                     1, 0
-                ) AS assenza_recag012
-
-            FROM gold_senza_schedule_refinement g
-            LEFT JOIN notification_perimetro n
-                ON g.iun = n.iun
-            LEFT JOIN temp_analog_attempt a
-                ON g.iun = a.iun
-               AND CAST(g.attempt_number AS INT) = a.attempt_number_timeline
-            LEFT JOIN ultimi_eventi_silver s
-                ON g.requestid = s.requestid
-            LEFT JOIN wi7_poste w
-                ON g.requestid = w.requestid
+                ) AS assenza_RECAG012,
+                    IF(
+                        fine_recapito_stato IN ('RECRSI003C','RECRSI004C','RECRI003C','RECRI004C')
+                        AND tentativo_recapito_stato IS NULL,
+                        1,
+                        0
+                    ) AS assenza_avviato_estero,
+                    IF(
+                        fine_recapito_stato IN ('RECRSI003C','RECRSI004C','RECRI003C','RECRI004C')
+                        AND messaingiacenza_recapito_stato IS NULL,
+                        1,
+                        0
+                    ) AS assenza_ingresso_paese_estero
+            FROM temp_controlli s
         ),
 
-        dettaglio AS (
+        temp_assenza_eventi AS (
             SELECT
-                c.*,
-                CASE
-                    WHEN controllo_causale = 0
-                     AND controllo_date_business = 0
-                     AND controllo_tripletta = 0
-                     AND controllo_tempistiche_compiuta_giacenza = 0
-                     AND controllo_inesito_casi_giacenza = 0
-                     AND assenza_inesito = 0
-                     AND assenza_recag012 = 0
-                     AND assenza_pre_esito = 0
-                     AND assenza_dematerializzazione_23l_ar_plico = 0
-                     AND assenza_messa_in_giacenza = 0
-                     AND assenza_demat_arcad = 0
-                     AND flag_feedback_attempt_0 = 0
-                        THEN 'da perfezionare'
-                    WHEN controllo_causale = 0
-                     AND controllo_date_business = 0
-                     AND controllo_tripletta = 0
-                     AND controllo_tempistiche_compiuta_giacenza = 0
-                     AND controllo_inesito_casi_giacenza = 0
-                     AND assenza_inesito = 0
-                     AND assenza_recag012 = 0
-                     AND assenza_pre_esito = 0
-                     AND assenza_dematerializzazione_23l_ar_plico = 0
-                     AND assenza_messa_in_giacenza = 0
-                     AND assenza_demat_arcad = 0
-                     AND flag_feedback_attempt_0 = 1
-                        THEN 'bloccato al primo attempt'
-                    ELSE NULL
-                END AS dettaglio_rendicontazione
-            FROM controlli c
-            WHERE tms_perfezionamento_notification IS NULL
+                *,
+                IF(
+                    assenza_inesito = 1
+                    OR assenza_messa_in_giacenza = 1
+                    OR assenza_pre_esito = 1
+                    OR assenza_dematerializzazione_23l_ar_plico = 1
+                    OR assenza_demat_ARCAD = 1
+                    OR assenza_RECAG012 = 1
+                    OR assenza_avviato_estero = 1
+                    OR assenza_ingresso_paese_estero = 1,
+                    1, 0
+                ) AS flag_esiti_mancanti
+            FROM temp_postalizzazione
         ),
 
-        classificazione AS (
+        finale AS (
+            -- Per l'aggregato manteniamo solo la chiave, il flag di esclusione finale
+            -- e il cluster. Tutti i campi diagnostici restano calcolati solo finché
+            -- servono ai CASE di classificazione.
             SELECT
-                requestid,
+                t.requestid,
+                t.flag_notifica_visualizzata,
+                t.flag_destinatario_deceduto,
                 CASE
+                    -- I tavoli Poste mantengono la precedenza già prevista dal report aggregato.
                     WHEN flag_wi7_poste = 1
                         THEN 'Oggetto rientrante in tavoli Duplicati / Non Rendicontabili'
-                    WHEN (
-                        flag_wi7_report_postalizzazioni_incomplete = 1
-                        OR flag_wi7_consolidatore = 1
-                    ) AND flag_wi7_poste = 0
+                    WHEN (flag_wi7_report_postalizzazioni_incomplete = 1 OR flag_wi7_consolidatore = 1)
+                         AND flag_wi7_poste = 0
                         THEN 'Oggetto fuori sla'
                     WHEN (
                         controllo_causale = 1
@@ -725,44 +943,98 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         OR controllo_tripletta = 1
                         OR controllo_tempistiche_compiuta_giacenza = 1
                         OR controllo_inesito_casi_giacenza = 1
-                        OR assenza_inesito = 1
-                        OR assenza_messa_in_giacenza = 1
-                        OR assenza_pre_esito = 1
-                        OR assenza_dematerializzazione_23l_ar_plico = 1
-                        OR assenza_demat_arcad = 1
-                        OR assenza_recag012 = 1
+                        OR flag_esiti_mancanti = 1
+                        OR controllo_documentType = 1
                     )
                     AND fine_recapito_stato IS NOT NULL
                         THEN 'Errore rendicontazione/assenza eventi intermedi'
-                    WHEN dettaglio_rendicontazione = 'bloccato al primo attempt'
-                        THEN 'Oggetto bloccato al primo attempt'
-                    WHEN dettaglio_rendicontazione = 'da perfezionare'
-                     AND tms_date_payment IS NULL
-                        THEN 'Oggetto con rendicontazione corretta da perfezionare'
-                    WHEN dettaglio_rendicontazione = 'da perfezionare'
-                     AND tms_date_payment IS NOT NULL
-                        THEN 'Oggetto non perfezionato con evidenza di pagamento'
+                    WHEN (
+                        controllo_causale = 0
+                        AND controllo_date_business = 0
+                        AND controllo_tripletta = 0
+                        AND controllo_tempistiche_compiuta_giacenza = 0
+                        AND controllo_inesito_casi_giacenza = 0
+                        AND assenza_inesito = 0
+                        AND assenza_RECAG012 = 0
+                        AND assenza_pre_esito = 0
+                        AND assenza_dematerializzazione_23l_ar_plico = 0
+                        AND assenza_messa_in_giacenza = 0
+                        AND assenza_demat_arcad = 0
+                        AND assenza_avviato_estero = 0
+                        AND assenza_ingresso_paese_estero = 0
+                        AND controllo_documentType = 0
+                        AND CAST(t.attempt_number AS INT) = 0
+                    )
+                        THEN 'Oggetto con rendicontazione corretta - Bloccato al primo attempt'
+                    WHEN (
+                        controllo_causale = 0
+                        AND controllo_date_business = 0
+                        AND controllo_tripletta = 0
+                        AND controllo_tempistiche_compiuta_giacenza = 0
+                        AND controllo_inesito_casi_giacenza = 0
+                        AND assenza_inesito = 0
+                        AND assenza_RECAG012 = 0
+                        AND assenza_pre_esito = 0
+                        AND assenza_dematerializzazione_23l_ar_plico = 0
+                        AND assenza_messa_in_giacenza = 0
+                        AND assenza_demat_arcad = 0
+                        AND assenza_avviato_estero = 0
+                        AND assenza_ingresso_paese_estero = 0
+                        AND controllo_documentType = 0
+                        AND CAST(t.attempt_number AS INT) = 1
+                    )
+                        THEN 'Oggetto con rendicontazione corretta - Bloccato al secondo attempt'
                     ELSE 'Oggetto in corso di postalizzazione'
                 END AS cluster_mancato_perfezionamento
-            FROM dettaglio
+            FROM temp_assenza_eventi t
+        ),
+
+        finale_filtrato AS (
+            -- A questo punto tutti i filtri tecnici di perimetro sono già stati
+            -- applicati a monte. Per l'aggregato servono solo chiave e cluster.
+            SELECT
+                requestid,
+                flag_notifica_visualizzata,
+                cluster_mancato_perfezionamento
+            FROM finale
         )
 
         SELECT
             cluster_mancato_perfezionamento,
-            COUNT(DISTINCT requestid) AS numero_oggetti
-            -- Metrica temporaneamente disabilitata. Per ripristinarla, riportare
-            -- tms_date_payment nella CTE classificazione e riattivare:
-            -- , COUNT(DISTINCT CASE
-            --     WHEN tms_date_payment IS NOT NULL THEN requestid
-            --   END) AS oggetti_pagati
-        FROM classificazione
+            COUNT(DISTINCT requestid) AS numero_oggetti,
+            COUNT(DISTINCT CASE WHEN flag_notifica_visualizzata = 1
+                                THEN requestid END)
+                AS numero_oggetti_con_notifica_visualizzata
+        FROM finale_filtrato
         GROUP BY cluster_mancato_perfezionamento
+        ;
 
-    """
+        """
+        df_spark = spark.sql(final_sql)
+        logging.info("[SPARK] Conversione del solo aggregato finale in pandas...")
+        result = df_spark.toPandas()
+        log_step_end(
+            "7/7 Controlli business, classificazione e aggregazione",
+            final_started,
+            len(result),
+        )
+        logging.info(
+            "[SPARK] Query SSDA-526 completata in %.1f s - cluster restituiti=%s",
+            perf_counter() - run_start,
+            len(result),
+        )
+        return result
 
-    df_spark = spark.sql(query_sql)
-    logging.info("Conversione dell'aggregato in pandas...")
-    return df_spark.toPandas()
+    finally:
+        logging.info("[SPARK] Rilascio dataset persistiti (%s)...", len(persisted))
+        for df in reversed(persisted):
+            try:
+                df.unpersist(blocking=False)
+            except Exception:
+                logging.warning(
+                    "[SPARK] Impossibile rilasciare un dataset persistito.",
+                    exc_info=True,
+                )
 
 
 def get_last_update_date(spark: SparkSession) -> str:
@@ -782,17 +1054,15 @@ def get_last_update_date(spark: SparkSession) -> str:
 
 
 def cluster_order() -> list[str]:
-    """Ordine alfabetico basato sulla label pulita e non sugli asterischi."""
-    return sorted(
-        CLUSTER_META.keys(),
-        key=lambda cluster: CLUSTER_META[cluster]["label"].casefold(),
-    )
+    """Ordine business esplicito usato da GSheet, tabella, colori e grafico."""
+    return CLUSTER_ORDER.copy()
 
 
 def normalize_current_data(df: pd.DataFrame) -> pd.DataFrame:
     expected_columns = {
         "cluster_mancato_perfezionamento",
         "numero_oggetti",
+        VIEWED_COLUMN,
     }
     missing_columns = expected_columns.difference(df.columns)
     if missing_columns:
@@ -818,6 +1088,10 @@ def normalize_current_data(df: pd.DataFrame) -> pd.DataFrame:
         pd.to_numeric(result["numero_oggetti"], errors="raise")
         .fillna(0)
         .astype("int64")
+    )
+
+    result[VIEWED_COLUMN] = (
+        pd.to_numeric(result[VIEWED_COLUMN], errors="raise").fillna(0).astype("int64")
     )
 
     result = (
@@ -848,9 +1122,8 @@ def normalize_historical_snapshot(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalizza uno snapshot già pubblicato senza aggiungere i cluster mancanti.
 
-    Questa distinzione è essenziale nella migrazione dalla struttura a cinque
-    cluster: i tre nuovi cluster devono risultare non confrontabili, non uguali
-    a zero nella settimana precedente.
+    Lo storico legacy viene mantenuto senza aggiungere artificialmente i cluster
+    della nuova baseline. La non confrontabilità viene gestita da calculate_delta.
     """
     required = {"cluster_mancato_perfezionamento", "numero_oggetti"}
     missing = required.difference(df.columns)
@@ -983,6 +1256,10 @@ def read_history(sheet: Sheet) -> pd.DataFrame:
             history[column] = pd.NA
 
     history = history[HISTORY_COLUMNS]
+    # Celle legacy lasciate vuote: non sostituire l'assenza con 0 o con 'N/A'.
+    history[VIEWED_COLUMN] = pd.to_numeric(
+        history[VIEWED_COLUMN].replace("", pd.NA), errors="coerce"
+    ).astype("Int64")
     history["numero_oggetti"] = (
         pd.to_numeric(history["numero_oggetti"], errors="coerce")
         .fillna(0)
@@ -1045,12 +1322,12 @@ def calculate_delta(
     current_period: str,
 ) -> Tuple[pd.DataFrame, bool, Optional[int], Optional[str]]:
     """
-    Calcola il delta per ciascun cluster solo quando esiste una riga storica
-    confrontabile e la ``Data max deposito`` coincide.
+    Calcola il delta solo quando lo snapshot precedente appartiene già alla nuova
+    baseline a sei cluster e la Data max deposito coincide.
 
-    Nel passaggio da cinque a sette cluster, i quattro cluster invariati mantengono
-    quindi un delta numerico, mentre i tre nuovi cluster ricevono ``n.d.``. Il
-    totale rimane confrontabile a livello complessivo quando la data coincide.
+    La prima esecuzione con la nuova classificazione restituisce quindi ``n.d.``
+    per tutti i cluster e per il totale. Dalla settimana successiva il confronto
+    riparte automaticamente sulla nuova baseline, senza alterare lo storico legacy.
     """
     result = current_df.copy()
     result["numero_oggetti_precedente"] = pd.NA
@@ -1062,6 +1339,18 @@ def calculate_delta(
     )
     if previous is None:
         return result, False, None, None
+
+    previous_clusters = set(
+        previous["cluster_mancato_perfezionamento"].astype(str).str.strip()
+    )
+    current_schema = set(CLUSTER_ORDER)
+    if previous_clusters != current_schema:
+        logging.info(
+            "Nuova baseline SSDA-526: schema precedente non confrontabile (%s). "
+            "Delta impostato a n.d. per tutti i cluster.",
+            previous_week,
+        )
+        return result, False, None, previous_week
 
     if previous_period != current_period:
         logging.info(
@@ -1095,8 +1384,7 @@ def calculate_delta(
 
     previous_total = int(previous_norm["numero_oggetti_precedente"].sum())
     current_total = int(result["numero_oggetti"].sum())
-    total_delta = current_total - previous_total
-    return result, True, total_delta, previous_week
+    return result, True, current_total - previous_total, previous_week
 
 
 def build_current_history_snapshot(
@@ -1106,7 +1394,10 @@ def build_current_history_snapshot(
     execution_utc: str,
     period_reference: str,
 ) -> pd.DataFrame:
-    snapshot = current_df[["cluster_mancato_perfezionamento", "numero_oggetti"]].copy()
+    # Il fallback legacy può non possedere la metrica, introdotta con la nuova baseline.
+    snapshot = current_df.reindex(
+        columns=["cluster_mancato_perfezionamento", "numero_oggetti", VIEWED_COLUMN]
+    ).copy()
     snapshot.insert(0, PERIOD_COLUMN, period_reference)
     snapshot.insert(0, "data_esecuzione_utc", execution_utc)
     snapshot.insert(0, "data_inizio_settimana", week_start)
@@ -1134,14 +1425,21 @@ def upsert_history(
     result["data_inizio_settimana_parsed"] = pd.to_datetime(
         result["data_inizio_settimana"], errors="coerce"
     )
+    order_map = {cluster: idx for idx, cluster in enumerate(CLUSTER_ORDER)}
     result["cluster_sort"] = result["cluster_mancato_perfezionamento"].map(
+        lambda cluster: order_map.get(cluster, len(CLUSTER_ORDER) + 100)
+    )
+    result["cluster_label_sort"] = result["cluster_mancato_perfezionamento"].map(
         lambda cluster: CLUSTER_META.get(cluster, {})
         .get("label", LEGACY_CLUSTER_LABELS.get(cluster, str(cluster)))
         .casefold()
     )
     result = result.sort_values(
-        ["data_inizio_settimana_parsed", "cluster_sort"], kind="stable"
-    ).drop(columns=["data_inizio_settimana_parsed", "cluster_sort"])
+        ["data_inizio_settimana_parsed", "cluster_sort", "cluster_label_sort"],
+        kind="stable",
+    ).drop(
+        columns=["data_inizio_settimana_parsed", "cluster_sort", "cluster_label_sort"]
+    )
     return result[HISTORY_COLUMNS].reset_index(drop=True)
 
 
@@ -1152,6 +1450,10 @@ def validate_report(df: pd.DataFrame) -> None:
         )
     if (df["numero_oggetti"] < 0).any():
         raise ValueError("Sono presenti conteggi negativi.")
+    if ((df[VIEWED_COLUMN] < 0) | (df[VIEWED_COLUMN] > df["numero_oggetti"])).any():
+        raise ValueError(
+            "Conteggio visualizzate non coerente con il totale per cluster."
+        )
 
 
 # =============================================================================
@@ -1255,18 +1557,28 @@ def render_table(
             [
                 str(row.cluster_label_table),
                 format_integer_it(row.numero_oggetti),
+                format_integer_it(getattr(row, VIEWED_COLUMN)),
                 delta_text,
             ]
         )
         delta_colors.append(delta_color)
 
     total_objects = int(report_df["numero_oggetti"].sum())
+    total_viewed = int(report_df[VIEWED_COLUMN].sum())
     total_delta_text, _ = format_delta(total_delta, total_delta_available)
-    rows.append(["Totale", format_integer_it(total_objects), total_delta_text])
+    rows.append(
+        [
+            "Totale",
+            format_integer_it(total_objects),
+            format_integer_it(total_viewed),
+            total_delta_text,
+        ]
+    )
 
     columns = [
         "Cluster di mancato perfezionamento",
         "Numero oggetti",
+        "Di cui con notifica\nvisualizzata",
         "Delta settimanale",
     ]
 
@@ -1279,7 +1591,7 @@ def render_table(
         cellLoc="center",
         colLoc="center",
         loc="center",
-        colWidths=[0.69, 0.14, 0.17],
+        colWidths=[0.63, 0.10, 0.16, 0.11],
         bbox=[0.0, 0.0, 1.0, 1.0],
     )
     table.auto_set_font_size(False)
@@ -1300,6 +1612,8 @@ def render_table(
             cell.set_facecolor(HEADER_BG)
             cell.get_text().set_color(HEADER_TEXT_COLOR)
             cell.get_text().set_weight("bold")
+            if col_idx in (1, 2, 3):
+                cell.get_text().set_fontsize(10.0)
         elif row_idx == total_row_index:
             cell.set_facecolor(TOTAL_BG)
             cell.get_text().set_color(TOTAL_TEXT_COLOR)
@@ -1314,11 +1628,11 @@ def render_table(
             cell.PAD = 0.025
 
         # Colonne numeriche: 11 pt e corsivo, inclusa la riga Totale.
-        if row_idx > 0 and col_idx in (1, 2):
+        if row_idx > 0 and col_idx in (1, 2, 3):
             cell.get_text().set_fontsize(NUMERIC_FONT_SIZE)
             cell.get_text().set_style("italic")
 
-        if 0 < row_idx < total_row_index and col_idx == 2:
+        if 0 < row_idx < total_row_index and col_idx == 3:
             cell.get_text().set_color(delta_colors[row_idx - 1])
             cell.get_text().set_weight("bold")
 
@@ -1362,15 +1676,32 @@ def render_color_column(report_df: pd.DataFrame, output_path: Path) -> None:
     plt.close(fig)
 
 
-def _adjust_small_label_positions(points: list[dict], min_gap: float = 0.16) -> None:
+def _adjust_small_label_positions(
+    points: list[dict], min_gap: float = 0.22, y_limit: float = 1.10
+) -> None:
+    """Distribuisce le etichette esterne evitando sovrapposizioni sullo stesso lato."""
     for side in (-1, 1):
         side_points = sorted(
             [point for point in points if point["side"] == side],
             key=lambda point: point["y"],
         )
+        if not side_points:
+            continue
+
+        # Passaggio dal basso verso l'alto.
+        side_points[0]["y"] = max(side_points[0]["y"], -y_limit)
         for idx in range(1, len(side_points)):
-            if side_points[idx]["y"] - side_points[idx - 1]["y"] < min_gap:
-                side_points[idx]["y"] = side_points[idx - 1]["y"] + min_gap
+            side_points[idx]["y"] = max(
+                side_points[idx]["y"], side_points[idx - 1]["y"] + min_gap
+            )
+
+        # Se l'ultima etichetta supera il limite, ricompattiamo dall'alto verso il basso.
+        if side_points[-1]["y"] > y_limit:
+            side_points[-1]["y"] = y_limit
+            for idx in range(len(side_points) - 2, -1, -1):
+                side_points[idx]["y"] = min(
+                    side_points[idx]["y"], side_points[idx + 1]["y"] - min_gap
+                )
 
 
 def prepare_donut_data(report_df: pd.DataFrame) -> pd.DataFrame:
@@ -1467,6 +1798,7 @@ def render_donut(report_df: pd.DataFrame, output_path: Path) -> None:
                         "y": y,
                         "side": 1 if x >= 0 else -1,
                         "label": display_label,
+                        "is_other": cluster_label == "Altri",
                     }
                 )
 
@@ -1476,7 +1808,8 @@ def render_donut(report_df: pd.DataFrame, output_path: Path) -> None:
             cos_angle = math.cos(angle)
             x_anchor = 0.98 * cos_angle
             y_anchor = 0.98 * math.sin(angle)
-            x_text = 1.14 * cos_angle
+            radial_text = 1.30 if item.get("is_other") else 1.15
+            x_text = radial_text * cos_angle
             if abs(cos_angle) < 0.15:
                 horizontal_alignment = "center"
             else:
@@ -1565,6 +1898,179 @@ def render_combined(
     canvas.save(output_path, format="PNG", optimize=True)
 
 
+def render_viewed_donut(
+    report_df: pd.DataFrame, output_path: Path, show_title: bool = True
+) -> None:
+    """Donut per postalizzazioni, non per IUN distinti.
+
+    La fetta teal e' centrata sul semipiano sinistro (ore 9), coerentemente
+    con la prima voce della legenda. La rotazione non tocca alcun testo.
+    """
+    total = int(report_df["numero_oggetti"].sum())
+    viewed = int(report_df[VIEWED_COLUMN].sum())
+    # Il COUNT DISTINCT condizionato prende un sottoinsieme degli stessi
+    # requestId della metrica principale: non aggiungiamo assert ridondanti.
+    fig, ax = plt.subplots(figsize=(5.2, 5.0), dpi=IMAGE_DPI)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    if total:
+        viewed_angle = 360.0 * viewed / total
+        # In Matplotlib, con counterclock=False, il centro del primo settore
+        # e' startangle - viewed_angle/2. Lo centriamo a 180 gradi.
+        viewed_startangle = (180.0 + viewed_angle / 2.0) % 360.0
+        ax.pie(
+            [viewed, total - viewed],
+            colors=[VIEWED_COLOR, NOT_VIEWED_COLOR],
+            startangle=viewed_startangle,
+            counterclock=False,
+            wedgeprops={"width": 0.38, "edgecolor": "white", "linewidth": 2},
+        )
+        percent = 100.0 * viewed / total
+    else:
+        ax.add_patch(
+            plt.Circle(
+                (0, 0), 0.8, fill=False, linewidth=22, edgecolor=NOT_VIEWED_COLOR
+            )
+        )
+        percent = 0.0
+    ax.text(
+        0,
+        0.08,
+        format_percentage_it(percent),
+        ha="center",
+        va="center",
+        fontsize=21,
+        weight="bold",
+        color=TEXT_COLOR,
+    )
+    ax.text(
+        0,
+        -0.20,
+        "visualizzate",
+        ha="center",
+        va="center",
+        fontsize=11,
+        color=TEXT_COLOR,
+    )
+    if show_title:
+        ax.set_title(
+            "Visualizzazione della notifica",
+            fontsize=13,
+            weight="bold",
+            color=TEXT_COLOR,
+            pad=8,
+        )
+    from matplotlib.patches import Patch
+
+    ax.legend(
+        handles=[
+            Patch(
+                facecolor=VIEWED_COLOR,
+                label=f"Visualizzate: {format_integer_it(viewed)}",
+            ),
+            Patch(
+                facecolor=NOT_VIEWED_COLOR,
+                label=f"Non visualizzate: {format_integer_it(total - viewed)}",
+            ),
+        ],
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.15),
+        ncol=2,
+        frameon=False,
+        fontsize=9,
+    )
+    # Il grafico e' volutamente quasi quadrato, per non risultare minuscolo
+    # quando viene inserito nella composizione verticale a due donut.
+    fig.savefig(output_path, bbox_inches="tight", pad_inches=0.10, facecolor="white")
+    plt.close(fig)
+
+
+def _title_font_for_composite(px: int):
+    """Font PIL per titoli compatti; fallback se Montserrat non disponibile."""
+    font_path = font_manager.findfont(
+        font_manager.FontProperties(family=FONT_FAMILY, weight="bold"),
+        fallback_to_default=True,
+    )
+    try:
+        return ImageFont.truetype(font_path, size=px)
+    except (OSError, ValueError):
+        return ImageFont.load_default()
+
+
+def render_combined_viewed(
+    table_path: Path,
+    legend_path: Path,
+    chart_path: Path,
+    viewed_chart_path: Path,
+    output_path: Path,
+) -> None:
+    """Variante con due grafici: 64% principale, 33% visualizzazioni, 3% gap.
+
+    Le percentuali si riferiscono all'altezza della tabella. All'interno
+    di ciascuna fascia il titolo occupa pochissimo spazio; si usa il
+    rapporto d'aspetto originale dei PNG senza deformarne testo e fette.
+    """
+    table_img = Image.open(table_path).convert("RGB")
+    legend_img = Image.open(legend_path).convert("RGB")
+    chart_img = Image.open(chart_path).convert("RGB")
+    viewed_img = Image.open(viewed_chart_path).convert("RGB")
+    height = table_img.height
+    if legend_img.height != height:
+        width = max(1, round(legend_img.width * height / legend_img.height))
+        legend_img = legend_img.resize((width, height), Image.Resampling.LANCZOS)
+
+    main_slot = round(height * 0.64)
+    small_slot = round(height * 0.33)
+    vertical_gap = height - main_slot - small_slot
+    title_height = max(22, round(height * 0.052))
+    main_available = main_slot - title_height
+    small_available = small_slot - title_height
+
+    # Dimensioni naturali: il secondo donut arriva a ~70-75% del diametro
+    # del principale. Niente stiramenti anisotropi delle immagini.
+    main_width = round(chart_img.width * main_available / chart_img.height)
+    small_width = round(viewed_img.width * small_available / viewed_img.height)
+    chart_width = max(main_width, small_width)
+    horizontal_gap = 28
+    canvas = Image.new(
+        "RGB",
+        (
+            legend_img.width + table_img.width + horizontal_gap + chart_width,
+            height,
+        ),
+        "white",
+    )
+    canvas.paste(legend_img, (0, 0))
+    canvas.paste(table_img, (legend_img.width, 0))
+    x0 = legend_img.width + table_img.width + horizontal_gap
+
+    draw = ImageDraw.Draw(canvas)
+    font = _title_font_for_composite(max(18, round(height * 0.025)))
+    fill = TEXT_COLOR
+
+    def paste_slot(img: Image.Image, y_top: int, img_h: int, title: str):
+        # Ancoraggio orizzontale centralizzato per grafici e titoli.
+        draw.text(
+            (x0 + chart_width // 2, y_top + title_height // 2),
+            title,
+            font=font,
+            fill=fill,
+            anchor="mm",
+        )
+        width = max(1, round(img.width * img_h / img.height))
+        resized = img.resize((width, img_h), Image.Resampling.LANCZOS)
+        canvas.paste(resized, (x0 + (chart_width - width) // 2, y_top + title_height))
+
+    paste_slot(chart_img, 0, main_available, "Postalizzazioni per cluster")
+    paste_slot(
+        viewed_img,
+        main_slot + vertical_gap,
+        small_available,
+        "Visualizzazione della notifica",
+    )
+    canvas.save(output_path, format="PNG", optimize=True)
+
+
 def generate_all_images(
     report_df: pd.DataFrame,
     total_delta_available: bool,
@@ -1582,12 +2088,26 @@ def generate_all_images(
     )
     render_color_column(report_df, paths["legend"])
     render_donut(report_df, paths["chart"])
+    render_viewed_donut(report_df, paths["viewed_chart"])
+    # Variante senza titolo interno, perche' nel completo il titolo e'
+    # disegnato direttamente nella fascia del grafico (no doppio titolo).
+    viewed_chart_compact = OUTPUT_DIR / "_ssda526_viewed_for_combined.png"
+    render_viewed_donut(report_df, viewed_chart_compact, show_title=False)
     render_combined(
         paths["table"],
         paths["legend"],
         paths["chart"],
         paths["combined"],
     )
+    render_combined_viewed(
+        paths["table"],
+        paths["legend"],
+        paths["chart"],
+        viewed_chart_compact,
+        paths["combined_viewed"],
+    )
+    # Artefatto temporaneo locale: non viene caricato su Drive.
+    viewed_chart_compact.unlink(missing_ok=True)
 
     for path in paths.values():
         if not path.exists() or path.stat().st_size == 0:
@@ -1606,7 +2126,8 @@ def export_to_sheets(
     df: pd.DataFrame, creds: dict, sheet_id: str, sheet_name: str
 ) -> None:
     logging.info("Scrittura su Google Sheet: %s", sheet_name)
-    export_df = df.copy().astype(str)
+    # I campi storici privi di rilevazione restano celle vuote sul GSheet.
+    export_df = df.astype(object).where(pd.notna(df), "").astype(str)
     sheet = Sheet(sheet_id=sheet_id, service_credentials=creds, id_mode="key")
     sheet.upload(sheet_name, export_df)
     logging.info("Scrittura completata: %s", sheet_name)
@@ -1657,10 +2178,9 @@ def main() -> None:
         execution_utc = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
         current_week, week_start = current_week_metadata(now_rome)
 
-        # Migrazione iniziale: se lo storico non esiste, il tab corrente viene
-        # materializzato come settimana precedente. La struttura originaria a
-        # cinque cluster viene preservata senza aggiungere zeri artificiali ai
-        # tre nuovi cluster, che resteranno quindi non confrontabili.
+        # Se lo storico non esiste, il tab corrente viene materializzato come
+        # settimana precedente. La prima esecuzione della nuova baseline resta comunque
+        # non confrontabile: calculate_delta imposta n.d. su tutti i sei cluster.
         history_for_run = history.copy()
         if history_for_run.empty and current_sheet_fallback is not None:
             legacy_week, legacy_week_start = previous_week_metadata(now_rome)
@@ -1742,6 +2262,7 @@ def main() -> None:
             [
                 "cluster_mancato_perfezionamento",
                 "numero_oggetti",
+                VIEWED_COLUMN,
                 "delta_settimanale",
                 "delta_disponibile",
             ]
