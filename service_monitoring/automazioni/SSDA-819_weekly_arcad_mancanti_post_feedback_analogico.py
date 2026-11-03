@@ -20,7 +20,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-APP_NAME = "SSDA-819_Weekly_ARCAD_Mancanti_Post_Perfezionamento"
+APP_NAME = "SSDA-819 Weekly ARCAD Mancanti Post Feedback Analogico"
 GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
 
 SHEET_ID = "1gtalIxwHVftk5DQiXmk7MGt8o67t1XGciGlszwWFtxU"
@@ -44,7 +44,7 @@ SLACK_CONFIG_CANDIDATE_PATHS = [
     "/app/mount/notifications_webhook.txt",
 ]
 SLACK_WEBHOOK_NAME = "webhook_1"
-SLACK_LABEL = "SSDA-819 Weekly ARCAD Mancanti Post Perfezionamento"
+SLACK_LABEL = "SSDA-819 Weekly ARCAD Mancanti Post Feedback Analogico"
 
 INITIAL_WS_ROWS = 2
 GSHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -345,33 +345,76 @@ def run_query(spark: SparkSession):
     Costruisce il DataFrame base finale, che viene poi riutilizzato
     per i tab dei recapitisti e per i conteggi di log.
     """
-    logging.info("Costruzione DataFrame base ARCAD mancanti post perfezionamento...")
+    logging.info("Costruzione DataFrame base ARCAD mancanti post feedback analogico...")
 
     query = """
-    WITH dati_gold_corretti AS (
+    WITH send_analog_feedback AS (
+        SELECT DISTINCT
+            tl.iun,
+            CAST(
+                REGEXP_EXTRACT(
+                    tl.timelineelementid,
+                    'RECINDEX_([0-9]+)',
+                    1
+                ) AS INT
+            ) AS recindex_number,
+            CAST(
+                REGEXP_EXTRACT(
+                    tl.timelineelementid,
+                    'ATTEMPT_([0-9]+)',
+                    1
+                ) AS INT
+            ) AS attempt_number
+        FROM send.silver_timeline tl
+        WHERE tl.category = 'SEND_ANALOG_FEEDBACK'
+            AND tl.iun IS NOT NULL
+            AND CAST(
+                    REGEXP_EXTRACT(
+                        tl.timelineelementid,
+                        'RECINDEX_([0-9]+)',
+                        1
+                    ) AS INT
+                ) IS NOT NULL
+            AND CAST(
+                    REGEXP_EXTRACT(
+                        tl.timelineelementid,
+                        'ATTEMPT_([0-9]+)',
+                        1
+                    ) AS INT
+                ) IS NOT NULL
+    ),
+    dati_gold_corretti AS (
         SELECT
-            iun,
-            requestid,
-            requesttimestamp,
-            codice_oggetto,
-            geokey,
-            lotto,
-            affido_recapitista_con016_data,
-            accettazione_recapitista_con018_data,
-            recapitista_unificato,
-            perfezionamento_data,
-            certificazione_recapito_stato,
-            demat_arcad_stato,
-            accettazione_23l_recag012_data,
-            rend_23l_stato,
+            g.iun,
+            g.requestid,
+            g.requesttimestamp,
+            g.codice_oggetto,
+            g.geokey,
+            g.lotto,
+            g.affido_recapitista_con016_data,
+            g.accettazione_recapitista_con018_data,
+            g.recapitista_unificato,
+            g.certificazione_recapito_stato,
+            g.demat_arcad_stato,
+            g.accettazione_23l_recag012_data,
+            g.rend_23l_stato,
+            g.recindex_number,
+            g.attempt_number,
             CASE
-                WHEN codice_oggetto LIKE 'R14%' THEN 'Fulmine'
-                WHEN codice_oggetto LIKE '777%' OR codice_oggetto LIKE 'PSTAQ777%' THEN 'POST & SERVICE'
-                WHEN codice_oggetto LIKE '211%' THEN 'RTI Sailpost-Snem'
-                WHEN codice_oggetto LIKE '69%' OR codice_oggetto LIKE '381%' OR codice_oggetto LIKE 'RB1%' THEN 'Poste'
-                ELSE recapitista_unificato
+                WHEN g.codice_oggetto LIKE 'R14%' THEN 'Fulmine'
+                WHEN g.codice_oggetto LIKE '777%'
+                OR g.codice_oggetto LIKE 'PSTAQ777%' THEN 'POST & SERVICE'
+                WHEN g.codice_oggetto LIKE '211%' THEN 'RTI Sailpost-Snem'
+                WHEN g.codice_oggetto LIKE '69%'
+                OR g.codice_oggetto LIKE '381%'
+                OR g.codice_oggetto LIKE 'RB1%' THEN 'Poste'
+                ELSE g.recapitista_unificato
             END AS recapitista_unif
-        FROM send.gold_postalizzazione_analytics
+        FROM send.gold_postalizzazione_analytics g
+        INNER JOIN send_analog_feedback saf
+            ON g.iun = saf.iun
+            AND CAST(g.recindex_number AS INT) = saf.recindex_number
+            AND CAST(g.attempt_number AS INT) = saf.attempt_number
     ),
     oggetti_senza_arcad AS (
         SELECT
@@ -381,7 +424,10 @@ def run_query(spark: SparkSession):
             geokey,
             lotto,
             COALESCE(
-                LEAST(accettazione_recapitista_con018_data, affido_recapitista_con016_data),
+                LEAST(
+                    accettazione_recapitista_con018_data,
+                    affido_recapitista_con016_data
+                ),
                 accettazione_recapitista_con018_data,
                 affido_recapitista_con016_data,
                 requesttimestamp
@@ -389,11 +435,15 @@ def run_query(spark: SparkSession):
             recapitista_unif,
             requesttimestamp
         FROM dati_gold_corretti
-        WHERE perfezionamento_data IS NOT NULL
-          AND certificazione_recapito_stato IN ('RECAG005A','RECAG006A','RECAG007A','RECAG008A')
-          AND demat_arcad_stato IS NULL
-          AND accettazione_23l_recag012_data IS NOT NULL
-          AND rend_23l_stato IS NOT NULL
+        WHERE certificazione_recapito_stato IN (
+            'RECAG005A',
+            'RECAG006A',
+            'RECAG007A',
+            'RECAG008A'
+        )
+        AND demat_arcad_stato IS NULL
+        AND accettazione_23l_recag012_data IS NOT NULL
+        AND rend_23l_stato IS NOT NULL
     )
     SELECT
         iun,
@@ -404,7 +454,7 @@ def run_query(spark: SparkSession):
         affido_accettazione_rec_data,
         recapitista_unif,
         requesttimestamp
-    FROM oggetti_senza_arcad
+    FROM oggetti_senza_arcad;
     """
 
     df = spark.sql(query)
@@ -416,12 +466,10 @@ def get_last_update_date(spark: SparkSession) -> str:
     """Estrae MAX(requesttimestamp) dalla gold_postalizzazione_analytics."""
     logging.info("Estrazione data ultimo aggiornamento...")
 
-    max_date_df = spark.sql(
-        """
+    max_date_df = spark.sql("""
         SELECT MAX(requesttimestamp) AS max_ts
         FROM send.gold_postalizzazione_analytics
-        """
-    )
+        """)
     max_date = max_date_df.collect()[0]["max_ts"]
 
     if isinstance(max_date, datetime):
