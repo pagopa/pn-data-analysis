@@ -5,7 +5,10 @@
 Il perimetro include PREPARE_ANALOG_DELIVERY% e PREPARE_ANALOG_MESSAGE% (c'è stato un cambio denominazione il 26 ottobre 2026).
 
 Il job produce tre tab nel Google Sheet: dettaglio, pivot stati e log di controllo.
-Gli eventi CON/RS sono mappati secondo "Integrazione con Consolidatore"
+Perimetro di richieste dal 19/10/2026 incluso, filtrato su requesttimestamp.
+Per ogni requestid seleziona l'ultimo evento rendicontato diverso da CON020 e
+REC090; in assenza di eventi validi mantiene P000 o IN_ATTESA_EVENTI.
+Gli eventi CON/RS/RIS sono mappati secondo "Integrazione con Consolidatore"
 (PagoPA Confluence, consultata il 28/10/2026):
 https://pagopa.atlassian.net/wiki/spaces/PN/pages/643368025/Integrazione+con+Consolidatore
 """
@@ -52,7 +55,6 @@ LOG_COLS = [
     "oggetti",
     "rendicontati",
     "in_attesa",
-    "stati_inattesi",
     "stati_distinti",
     "max_data_rendicontazione",
     "dettaglio_errore",
@@ -64,12 +66,61 @@ DETAIL_COLS = [
     "stato_monitoraggio",
     "statusdatetime",
     "clientrequesttimestamp",
-    "recindex",
-    "attempt",
-    "pcretry",
 ]
-PIVOT_COLS = ["stato_monitoraggio", "numero_oggetti"]
+PIVOT_COLS = ["stato_monitoraggio", "statuscode", "numero_oggetti"]
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# Ordine funzionale delle righe della pivot, basato sulla sequenza degli
+# stati nell'estratto "Integrazione con Consolidatore" (CON, RS, RIS).
+# I codici CON020 e REC090 sono esclusi dalla selezione e non vanno mappati.
+# Non includiamo stati AR, 890 o RIR: non appartengono ai prodotti richiesti.
+STATUS_MAPPING = [
+    ("P000", "AFFIDO_CONSOLIDATORE"),
+    ("CON998", "ERRORE_RECUPERO_DOCUMENTO"),
+    ("CON997", "ERRORE_SMISTAMENTO"),
+    ("CON996", "ERRORE_VERIFICA_PDF"),
+    ("CON995", "ERRORE_STAMPA"),
+    ("CON993", "ERRORE_STAMPA_PARZIALE"),
+    ("CON080", "STAMPATO_IMBUSTATO"),
+    ("CON010", "DISTINTA_ELETTRONICA_INVIATA"),
+    ("CON011", "DISTINTA_ELETTRONICA_SIGILLATA"),
+    ("CON012", "DISTINTA_ELETTRONICA_ACCETTATA"),
+    ("CON992", "DISTINTA_ELETTRONICA_RIFIUTATA"),
+    ("CON09A", "MATERIALITA_PRONTA_PER_RITIRO"),
+    ("CON016", "PICKUP_RECAPITISTA"),
+    ("CON018", "ACCETTAZIONE_RECAPITISTA"),
+    ("CON991", "MANCATA_ACCETTAZIONE_RECAPITISTA"),
+    ("RECRS010", "INESITO_RECAPITO"),
+    ("RECRS011", "IN_GIACENZA"),
+    ("RECRS001C", "CONSEGNATO_FASCICOLO_CHIUSO"),
+    ("RECRS002A", "MANCATA_CONSEGNA_PRE_ESITO"),
+    ("RECRS002B", "MANCATA_CONSEGNA_IN_DEMATERIALIZZAZIONE"),
+    ("RECRS002C", "MANCATA_CONSEGNA_FASCICOLO_CHIUSO"),
+    ("RECRS002D", "IRREPERIBILITA_ASSOLUTA_PRE_ESITO"),
+    ("RECRS002E", "IRREPERIBILITA_IN_DEMATERIALIZZAZIONE"),
+    ("RECRS002F", "IRREPERIBILITA_FASCICOLO_CHIUSO"),
+    ("RECRS003C", "CONSEGNATO_GIACENZA_FASCICOLO_CHIUSO"),
+    ("RECRS004A", "MANCATA_CONSEGNA_GIACENZA_PRE_ESITO"),
+    ("RECRS004B", "MANCATA_CONSEGNA_GIACENZA_IN_DEMATERIALIZZAZIONE"),
+    ("RECRS004C", "MANCATA_CONSEGNA_GIACENZA_FASCICOLO_CHIUSO"),
+    ("RECRS005A", "COMPIUTA_GIACENZA_PRE_ESITO"),
+    ("RECRS005B", "COMPIUTA_GIACENZA_IN_DEMATERIALIZZAZIONE"),
+    ("RECRS005C", "COMPIUTA_GIACENZA_FASCICOLO_CHIUSO"),
+    ("RECRS006", "FURTO_SMARRIMENTO_DETERIORAMENTO"),
+    ("RECRS013", "NON_RENDICONTABILE"),
+    ("RECRS015", "CAUSA_FORZA_MAGGIORE"),
+    ("RECRSI001", "AVVIATO_ALL_ESTERO"),
+    ("RECRSI002", "INGRESSO_NEL_PAESE_ESTERO"),
+    ("RECRSI003C", "CONSEGNATO_RIS_FASCICOLO_CHIUSO"),
+    ("RECRSI004A", "NON_CONSEGNATO_RIS_PRE_ESITO"),
+    ("RECRSI004B", "NON_CONSEGNATO_RIS_IN_DEMATERIALIZZAZIONE"),
+    ("RECRSI004C", "NON_CONSEGNATO_RIS_FASCICOLO_CHIUSO"),
+    ("RECRSI005", "FURTO_SMARRIMENTO_DETERIORAMENTO_RIS"),
+]
+STATUS_ORDER = {code: i for i, (code, label) in enumerate(STATUS_MAPPING)}
+# Gli stati di fallback sono mostrati dopo gli eventi noti.
+STATUS_ORDER[""] = len(STATUS_ORDER)
+
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -77,12 +128,17 @@ logging.basicConfig(
 log = logging.getLogger(APP_NAME)
 
 # Spark esegue una sola lettura della SILVER con OUTER EXPLODE.
+# I valori di mapping sono costanti definite nel codice e non provengono da input esterni.
+# La CASE SQL e l'ordine della pivot condividono STATUS_MAPPING: un'unica fonte.
+STATUS_CASE = "\n".join(
+    f"            WHEN x.statuscode = '{code}' THEN '{label}'"
+    for code, label in STATUS_MAPPING
+)
 QUERY = r"""
 -- SSDA-1771 | Monitoraggio ComBo - Spark SQL
--- PREPARE_ANALOG_DELIVERY e PREPARE_ANALOG_MESSAGE sono denominazioni
--- successive dello stesso perimetro di postalizzazione analogica RS.
--- Priorita': ultimo evento rendicontato, poi P000, poi nessuno stato.
--- OUTER EXPLODE conserva anche le richieste prive di eventslist.
+-- Applichiamo il perimetro PRIMA dell'esplosione di eventslist.
+-- Il campo requesttimestamp e' stringa con data ISO all'inizio (YYYY-MM-DD).
+-- La comparazione lessicografica e' corretta finche' il formato e' ISO.
 WITH combo_eventi AS (
     SELECT
         t.requestid,
@@ -99,107 +155,62 @@ WITH combo_eventi AS (
         END AS clientrequesttimestamp
     FROM send.silver_postalizzazione t
     LATERAL VIEW OUTER EXPLODE(t.eventslist) ev AS e
-    WHERE (t.requestid LIKE 'pn-cons-000~PREPARE_ANALOG_DELIVERY%'
-       OR t.requestid LIKE 'pn-cons-000~PREPARE_ANALOG_MESSAGE%')
+    WHERE (
+        requestid LIKE 'pn-cons-000~PREPARE_ANALOG_DELIVERY%'
+        OR requestid LIKE 'pn-cons-000~PREPARE_ANALOG_MESSAGE%'
+    )
+      AND requesttimestamp >= '2026-10-19'
 ),
-ranking AS (
+prioritizzati AS (
     SELECT
         requestid, statuscode, statusdatetime, clientrequesttimestamp,
         CASE
+            -- Escludiamo questi eventi dalla scelta, SENZA perdere i requestid.
+            -- Il fallback permette di recuperare l'evento utile precedente.
+            WHEN statuscode IN ('CON020', 'REC090') THEN 2
+            WHEN statuscode = 'P000' THEN 1
             WHEN statuscode IS NOT NULL
              AND NULLIF(TRIM(clientrequesttimestamp), '') IS NOT NULL THEN 0
-            WHEN statuscode = 'P000' THEN 1
             ELSE 2
-        END AS priorita,
+        END AS priorita
+    FROM combo_eventi
+),
+ranking AS (
+    SELECT
+        *,
         ROW_NUMBER() OVER (
             PARTITION BY requestid
             ORDER BY
-                CASE
-                    WHEN statuscode IS NOT NULL
-                     AND NULLIF(TRIM(clientrequesttimestamp), '') IS NOT NULL THEN 0
-                    WHEN statuscode = 'P000' THEN 1
-                    ELSE 2
-                END ASC,
+                priorita ASC,
                 clientrequesttimestamp DESC NULLS LAST,
                 statusdatetime DESC NULLS LAST,
                 statuscode DESC NULLS LAST
         ) AS rn
-    FROM combo_eventi
+    FROM prioritizzati
 ),
 ultimo_evento AS (
-    -- Gli eventi privi sia di rendicontazione sia di P000 non sono esposti.
     SELECT
         requestid,
-        REGEXP_REPLACE(requestid, '^pn-cons-000~', '') AS requestid_normalizzato,
         CASE WHEN priorita < 2 THEN statuscode END AS statuscode,
         CASE WHEN priorita < 2 THEN statusdatetime END AS statusdatetime,
         CASE WHEN priorita < 2 THEN clientrequesttimestamp END AS clientrequesttimestamp
     FROM ranking
     WHERE rn = 1
-),
-integrazione_campi AS (
-    SELECT
-        x.requestid,
-        NULLIF(REGEXP_EXTRACT(x.requestid_normalizzato, 'IUN_([^.]+)', 1), '') AS iun,
-        x.statuscode,
-        CASE
-            WHEN x.statuscode IS NULL THEN 'IN_ATTESA_EVENTI'
-            WHEN x.statuscode = 'P000' THEN 'AFFIDO_CONSOLIDATORE'
-          -- Consolidatore: avanzamenti
-          WHEN x.statuscode = 'CON080' THEN 'STAMPATO_IMBUSTATO'
-          WHEN x.statuscode = 'CON020' THEN 'AFFIDO_CONSERVATO'
-          WHEN x.statuscode = 'CON010' THEN 'DISTINTA_ELETTRONICA_INVIATA'
-          WHEN x.statuscode = 'CON011' THEN 'DISTINTA_ELETTRONICA_SIGILLATA'
-          WHEN x.statuscode = 'CON012' THEN 'DISTINTA_ELETTRONICA_ACCETTATA'
-          WHEN x.statuscode = 'CON09A' THEN 'MATERIALITA_PRONTA_PER_RITIRO'
-          WHEN x.statuscode = 'CON016' THEN 'PICKUP_RECAPITISTA'
-          WHEN x.statuscode = 'CON018' THEN 'ACCETTAZIONE_RECAPITISTA'
-          -- Consolidatore: errori
-          WHEN x.statuscode = 'CON998' THEN 'ERRORE_RECUPERO_DOCUMENTO'
-          WHEN x.statuscode = 'CON997' THEN 'ERRORE_SMISTAMENTO'
-          WHEN x.statuscode = 'CON996' THEN 'ERRORE_VERIFICA_PDF'
-          WHEN x.statuscode = 'CON995' THEN 'ERRORE_STAMPA'
-          WHEN x.statuscode = 'CON993' THEN 'ERRORE_STAMPA_PARZIALE'
-          WHEN x.statuscode = 'CON992' THEN 'DISTINTA_ELETTRONICA_RIFIUTATA'
-          WHEN x.statuscode = 'CON991' THEN 'MANCATA_ACCETTAZIONE_RECAPITISTA'
-          -- Recapito RS: avanzamenti e pre-esiti
-          WHEN x.statuscode = 'RECRS010' THEN 'INESITO_RECAPITO'
-          WHEN x.statuscode = 'RECRS011' THEN 'IN_GIACENZA'
-          WHEN x.statuscode = 'RECRS002A' THEN 'MANCATA_CONSEGNA_PRE_ESITO'
-          WHEN x.statuscode = 'RECRS002D' THEN 'IRREPERIBILITA_ASSOLUTA_PRE_ESITO'
-          WHEN x.statuscode = 'RECRS004A' THEN 'MANCATA_CONSEGNA_GIACENZA_PRE_ESITO'
-          WHEN x.statuscode = 'RECRS005A' THEN 'COMPIUTA_GIACENZA_PRE_ESITO'
-          -- Recapito RS: dematerializzazione
-          WHEN x.statuscode = 'RECRS002B' THEN 'MANCATA_CONSEGNA_IN_DEMATERIALIZZAZIONE'
-          WHEN x.statuscode = 'RECRS002E' THEN 'IRREPERIBILITA_IN_DEMATERIALIZZAZIONE'
-          WHEN x.statuscode = 'RECRS004B' THEN 'MANCATA_CONSEGNA_GIACENZA_IN_DEMATERIALIZZAZIONE'
-          WHEN x.statuscode = 'RECRS005B' THEN 'COMPIUTA_GIACENZA_IN_DEMATERIALIZZAZIONE'
-          -- Recapito RS: fascicolo chiuso
-          WHEN x.statuscode = 'RECRS001C' THEN 'CONSEGNATO_FASCICOLO_CHIUSO'
-          WHEN x.statuscode = 'RECRS002C' THEN 'MANCATA_CONSEGNA_FASCICOLO_CHIUSO'
-          WHEN x.statuscode = 'RECRS002F' THEN 'IRREPERIBILITA_FASCICOLO_CHIUSO'
-          WHEN x.statuscode = 'RECRS003C' THEN 'CONSEGNATO_GIACENZA_FASCICOLO_CHIUSO'
-          WHEN x.statuscode = 'RECRS004C' THEN 'MANCATA_CONSEGNA_GIACENZA_FASCICOLO_CHIUSO'
-          WHEN x.statuscode = 'RECRS005C' THEN 'COMPIUTA_GIACENZA_FASCICOLO_CHIUSO'
-          -- Recapito RS: anomalie e condizioni particolari
-          WHEN x.statuscode = 'RECRS006' THEN 'FURTO_SMARRIMENTO_DETERIORAMENTO'
-          WHEN x.statuscode = 'RECRS013' THEN 'NON_RENDICONTABILE'
-          WHEN x.statuscode = 'RECRS015' THEN 'CAUSA_FORZA_MAGGIORE'
-          WHEN x.statuscode = 'REC090' THEN 'ARCHIVIAZIONE_FISICA_MATERIALITA_RITORNO'
-                ELSE 'STATO_INATTESO'
-        END AS stato_monitoraggio,
-        x.statusdatetime,
-        x.clientrequesttimestamp,
-        CAST(NULLIF(REGEXP_EXTRACT(x.requestid_normalizzato, 'RECINDEX_([0-9]+)', 1), '') AS INT) AS recindex,
-        CAST(NULLIF(REGEXP_EXTRACT(x.requestid_normalizzato, 'ATTEMPT_([0-9]+)', 1), '') AS INT) AS attempt,
-        CAST(NULLIF(REGEXP_EXTRACT(x.requestid_normalizzato, 'PCRETRY_([0-9]+)', 1), '') AS INT) AS pcretry
-    FROM ultimo_evento x
 )
 SELECT
-    requestid, iun, statuscode, stato_monitoraggio,
-    statusdatetime, clientrequesttimestamp, recindex, attempt, pcretry
-FROM integrazione_campi
-"""
+    x.requestid,
+    -- Lo IUN viene estratto dal requestid senza join aggiuntive.
+    NULLIF(REGEXP_EXTRACT(x.requestid, 'IUN_([^.]+)', 1), '') AS iun,
+    x.statuscode,
+    CASE
+        WHEN x.statuscode IS NULL THEN 'IN_ATTESA_EVENTI'
+__STATUS_CASE__
+        ELSE CONCAT('NON_MAPPATO_', x.statuscode)
+    END AS stato_monitoraggio,
+    x.statusdatetime,
+    x.clientrequesttimestamp
+FROM ultimo_evento x
+""".replace("__STATUS_CASE__", STATUS_CASE)
 
 
 # --- Funzioni di utilità ---
@@ -255,8 +266,8 @@ def retry_gsheet(fn, label, attempts=5):
 def ensure_tabs(spreadsheet):
     existing = {ws.title: ws for ws in spreadsheet.worksheets()}
     for name, columns in (
-        (TAB_DETTAGLIO, 9),
-        (TAB_RIEPILOGO, 2),
+        (TAB_DETTAGLIO, len(DETAIL_COLS)),
+        (TAB_RIEPILOGO, len(PIVOT_COLS)),
         (TAB_LOG, len(LOG_COLS)),
     ):
         if name not in existing:
@@ -397,7 +408,6 @@ def main():
         "oggetti": 0,
         "rendicontati": 0,
         "in_attesa": 0,
-        "stati_inattesi": 0,
         "stati_distinti": 0,
         "max_data_rendicontazione": "-",
     }
@@ -444,50 +454,51 @@ def main():
             raise RuntimeError("Duplicazioni requestid nel dataset di dettaglio")
         if df.filter(F.col("requestid").isNull()).limit(1).count():
             raise RuntimeError("Presenza di requestid NULL")
-        # Controllo della corretta estrazione delle chiavi dal requestid.
-        if (
-            df.filter(
-                F.col("iun").isNull()
-                | F.col("recindex").isNull()
-                | F.col("attempt").isNull()
-                | F.col("pcretry").isNull()
-            )
-            .limit(1)
-            .count()
-        ):
-            raise RuntimeError(
-                "Requestid ComBo con identificativi IUN/RECINDEX/ATTEMPT/PCRETRY non validi"
-            )
-        unknown = df.filter(F.col("stato_monitoraggio") == "STATO_INATTESO")
-        summary["stati_inattesi"] = unknown.count()
-        if summary["stati_inattesi"]:
-            unknown.groupBy("statuscode").count().orderBy(F.desc("count")).show(
-                50, truncate=False
-            )
-            log.warning("Stati inattesi presenti: %s", summary["stati_inattesi"])
+        # Lo IUN viene ricavato dal requestid
+        if df.filter(F.col("iun").isNull()).limit(1).count():
+            raise RuntimeError("Presenza di IUN NULL estratto dal requestid")
+        # L'evento scelto non puo' mai essere uno dei due codici esclusi.
+        if df.filter(F.col("statuscode").isin("CON020", "REC090")).limit(1).count():
+            raise RuntimeError("Selezionato un evento escluso (CON020/REC090)")
+        # La pivot raggruppa per stato_monitoraggio (stesso valore del dettaglio)
+        # e codice: colonna A stato_monitoraggio, B statuscode, C numero_oggetti.
+        # Un codice sconosciuto resta riconoscibile e non viene aggregato ad altri.
         pivot_rows = (
-            df.groupBy("stato_monitoraggio")
+            df.groupBy("stato_monitoraggio", "statuscode")
             .agg(F.count("*").alias("numero_oggetti"))
-            .orderBy(F.desc("numero_oggetti"), "stato_monitoraggio")
             .collect()
         )
-        pivot_data = [
-            (r["stato_monitoraggio"], int(r["numero_oggetti"])) for r in pivot_rows
-        ]
-        if any(state is None for state, _ in pivot_data):
-            raise RuntimeError("Stato monitoraggio NULL")
-        if sum(n for _, n in pivot_data) != summary["oggetti"]:
+        pivot_data = sorted(
+            [
+                (
+                    r["stato_monitoraggio"],
+                    r["statuscode"] or "",
+                    int(r["numero_oggetti"]),
+                )
+                for r in pivot_rows
+            ],
+            key=lambda item: (
+                STATUS_ORDER.get(item[1], len(STATUS_ORDER) + 1),
+                item[1],
+            ),
+        )
+        if any(not stato for stato, _, _ in pivot_data):
+            raise RuntimeError("stato_monitoraggio NULL o vuoto nella pivot")
+        if sum(n for _, _, n in pivot_data) != summary["oggetti"]:
             raise RuntimeError("Quadratura pivot/dettaglio fallita")
         # P000 rimane visibile nel dettaglio anche senza data di rendicontazione.
         summary["rendicontati"] = df.filter(
             F.col("statuscode").isNotNull()
+            & (F.col("statuscode") != "P000")
             & (F.trim(F.coalesce(F.col("clientrequesttimestamp"), F.lit(""))) != "")
         ).count()
         summary["in_attesa"] = summary["oggetti"] - summary["rendicontati"]
         summary["stati_distinti"] = len(pivot_data)
-        max_ts = df.agg(F.max("clientrequesttimestamp").alias("max_ts")).first()[
-            "max_ts"
-        ]
+        max_ts = (
+            df.filter(F.col("statuscode") != "P000")
+            .agg(F.max("clientrequesttimestamp").alias("max_ts"))
+            .first()["max_ts"]
+        )
         summary["max_data_rendicontazione"] = str(max_ts) if max_ts else "-"
         # P000 e IN_ATTESA_EVENTI non sono conteggiati come eventi rendicontati.
         if (
@@ -519,22 +530,21 @@ def main():
         ):
             raise RuntimeError("Evento postale senza data di rendicontazione")
         log.info(
-            "Quadratura: totale=%s, rendicontati=%s, attesa=%s, inattesi=%s",
+            "Quadratura: totale=%s, rendicontati=%s, attesa=%s",
             summary["oggetti"],
             summary["rendicontati"],
             summary["in_attesa"],
-            summary["stati_inattesi"],
         )
 
         detail_pd = (
             df.select(*DETAIL_COLS)
-            .orderBy("iun", "requestid")
+            .orderBy("requestid")
             .toPandas()
             .fillna("")
             .astype(str)
         )
         pivot_pd = pd.DataFrame(pivot_data, columns=PIVOT_COLS)
-        pivot_pd.loc[len(pivot_pd)] = ["TOTALE", summary["oggetti"]]
+        pivot_pd.loc[len(pivot_pd)] = ["TOTALE", "", summary["oggetti"]]
         # Mantiene numero_oggetti numerico per la pivot del Google Sheet.
         # Tutti i tab rappresentano l'ultima esecuzione.
         check_spreadsheet_capacity(spreadsheet, len(detail_pd), len(pivot_pd))
@@ -567,7 +577,6 @@ def main():
             f"*CDE Job Alert* ({APP_NAME})\n"
             f"✅ *SUCCESS* | RunId: {run_id}\n"
             f"Righe: {summary['oggetti']} | Pivot: {summary['stati_distinti']} stati | "
-            f"Stati inattesi: {summary['stati_inattesi']}\n"
             f"Link: {SLACK_LINK}\n"
             f"Notifica informativa: {'OK' if info_sent else 'NON INVIATA'}"
         )
