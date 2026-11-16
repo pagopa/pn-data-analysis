@@ -8,6 +8,7 @@ import pandas as pd
 from google.oauth2 import service_account
 from pdnd_google_utils import Sheet
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
 # ---------------- CONFIGURAZIONE BASE ----------------
 logging.basicConfig(
@@ -28,6 +29,36 @@ SHEETS_CELL_LIMIT = 10_000_000
 
 MIGRATION_REFERENCE_DATE = "2026-04-07 00:00:00"
 START_DATE = "2026-04-14"
+
+# Schema unico per estrazione, storico e tab Google.
+BUSINESS_COLS = [
+    "iun",
+    "sentat",
+    "senderpaid",
+    "senderdenomination",
+    "sendertaxid",
+    "physicalCommunicationType",
+    "subject",
+    "taxonomycode",
+    "requestid",
+    "attempt_number",
+    "cap",
+    "prodotto",
+    "requesttimestamp",
+    "affido_consolidatore_data",
+    "scarto_consolidatore_data",
+    "statusrequest",
+    "pages",
+    "weight",
+]
+STOCK_COLS = BUSINESS_COLS + ["insert_timestamp_utc", "last_extraction"]
+CANCELLED_COLS = BUSINESS_COLS + [
+    "insert_timestamp_stock_utc",
+    "insert_timestamp_annullate_utc",
+    "last_extraction",
+    "tms_cancelled",
+]
+MISSING_VALUES = {"", "-", "nan", "None", "NaT", "null", "NULL"}
 
 
 # ---------------- ECCEZIONI ----------------
@@ -51,28 +82,70 @@ def get_sheet_client(creds: dict) -> Sheet:
     return Sheet(sheet_id=SHEET_ID, service_credentials=creds, id_mode="key")
 
 
-def safe_download_sheet(sheet: Sheet, sheet_name: str) -> pd.DataFrame:
-    """
-    Legge uno sheet e restituisce un DataFrame Pandas.
-    Se il tab non esiste ancora o è vuoto, restituisce un DataFrame vuoto.
-    """
-    try:
-        logging.info(f"Lettura sheet: {sheet_name}")
-        df = sheet.download(sheet_name)
-        if df is None:
-            logging.warning(
-                f"Il tab {sheet_name} non contiene dati. Restituisco DataFrame vuoto."
+def validate_sheet_headers(creds: dict) -> None:
+    """Blocca il job se i tab storici non hanno intestazioni valide nella prima riga."""
+    credentials = service_account.Credentials.from_service_account_info(
+        creds, scopes=GSHEETS_SCOPES
+    )
+    spreadsheet = gspread.authorize(credentials).open_by_key(SHEET_ID)
+
+    # Sono richiesti solo i campi comuni anche ai report legacy.
+    required = {
+        "iun",
+        "sentat",
+        "senderpaid",
+        "senderdenomination",
+        "cap",
+        "pages",
+        "weight",
+    }
+    for tab_name in (TAB_DA_ANNULLARE, TAB_ANNULLATE):
+        headers = [
+            str(value).strip()
+            for value in spreadsheet.worksheet(tab_name).row_values(1)
+        ]
+        missing = sorted(required - set(headers))
+        if (
+            not headers
+            or headers[0] != "iun"
+            or missing
+            or len(headers) != len(set(headers))
+        ):
+            reason = []
+            if not headers or headers[0] != "iun":
+                reason.append("la cella A1 deve contenere 'iun'")
+            if missing:
+                reason.append(f"colonne obbligatorie mancanti: {missing}")
+            if len(headers) != len(set(headers)):
+                reason.append("intestazioni duplicate")
+            message = (
+                f"Intestazioni non valide nel tab '{tab_name}', riga 1: {'; '.join(reason)}. "
+                "Ripristinare la prima riga prima di rieseguire il job. Nessun export eseguito."
             )
-            return pd.DataFrame()
-        df = pd.DataFrame(df)
-        if df.empty:
-            logging.warning(f"Il tab {sheet_name} è vuoto.")
-        return df
-    except Exception as e:
-        logging.warning(
-            f"Impossibile leggere il tab {sheet_name}: {e}. Restituisco DataFrame vuoto."
+            logging.error(message)
+            raise ValueError(message)
+        logging.info(
+            "Intestazioni verificate nel tab '%s': %d colonne", tab_name, len(headers)
         )
+
+
+def safe_download_sheet(sheet: Sheet, sheet_name: str) -> pd.DataFrame:
+    """Legge il tab; un errore di accesso interrompe il job per proteggere lo storico."""
+    logging.info("Lettura sheet: %s", sheet_name)
+    try:
+        df = sheet.download(sheet_name)
+    except Exception:
+        logging.exception(
+            "Lettura del tab '%s' fallita: interrompo il job.", sheet_name
+        )
+        raise
+    if df is None:
+        logging.warning("Tab '%s' privo di dati.", sheet_name)
         return pd.DataFrame()
+    df = pd.DataFrame(df)
+    if df.empty:
+        logging.warning("Tab '%s' vuoto.", sheet_name)
+    return df
 
 
 def spark_to_df_per_gsheet(df_spark, missing: str = "-") -> pd.DataFrame:
@@ -212,280 +285,141 @@ def get_last_update_date(spark: SparkSession) -> str:
 
 # ---------------- FUNZIONI DI MIGRAZIONE LEGACY ----------------
 def migrate_legacy_stock_df(previous_stock_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Retrocompatibilità per il tab legacy 'Weekly - da annullare'.
-
-    Se il foglio esiste già ma non contiene le nuove colonne tecniche:
-    - aggiunge insert_timestamp_utc valorizzandolo con MIGRATION_REFERENCE_DATE
-    - aggiunge last_extraction = 0
-    """
+    """Allinea le colonne del vecchio stock preservando la data di primo ingresso."""
     if previous_stock_df.empty:
-        return previous_stock_df
+        return pd.DataFrame(columns=STOCK_COLS)
 
-    previous_stock_df = previous_stock_df.copy()
-
-    required_business_cols = [
-        "iun",
-        "sentat",
-        "senderpaid",
-        "senderdenomination",
-        "physicalCommunicationType",
-        "subject",
-        "taxonomycode",
-        "cap",
-        "pages",
-        "weight",
-    ]
-    previous_stock_df = ensure_columns(previous_stock_df, required_business_cols)
-
-    if "insert_timestamp_utc" not in previous_stock_df.columns:
-        logging.info(
-            "Tab legacy 'da annullare' rilevato senza colonna 'insert_timestamp_utc'. "
-            f"Valorizzo tutte le righe pregresse con {MIGRATION_REFERENCE_DATE}."
-        )
-        previous_stock_df["insert_timestamp_utc"] = MIGRATION_REFERENCE_DATE
+    df = ensure_columns(previous_stock_df.copy(), BUSINESS_COLS)
+    if "insert_timestamp_utc" not in df.columns:
+        logging.info("Stock legacy: uso data iniziale %s", MIGRATION_REFERENCE_DATE)
+        df["insert_timestamp_utc"] = MIGRATION_REFERENCE_DATE
     else:
-        previous_stock_df["insert_timestamp_utc"] = previous_stock_df[
-            "insert_timestamp_utc"
-        ].replace(["", "-", "nan", "None", "NaT"], np.nan)
-        previous_stock_df["insert_timestamp_utc"] = previous_stock_df[
-            "insert_timestamp_utc"
-        ].fillna(MIGRATION_REFERENCE_DATE)
-
-    if "last_extraction" not in previous_stock_df.columns:
-        logging.info(
-            "Tab legacy 'da annullare' rilevato senza colonna 'last_extraction'. "
-            "Imposto 0 su tutte le righe pregresse."
+        df["insert_timestamp_utc"] = (
+            df["insert_timestamp_utc"]
+            .replace(list(MISSING_VALUES), np.nan)
+            .fillna(MIGRATION_REFERENCE_DATE)
         )
-        previous_stock_df["last_extraction"] = "0"
-    else:
-        previous_stock_df["last_extraction"] = "0"
 
-    desired_order = [
-        "iun",
-        "sentat",
-        "senderpaid",
-        "senderdenomination",
-        "physicalCommunicationType",
-        "subject",
-        "taxonomycode",
-        "cap",
-        "pages",
-        "weight",
-        "insert_timestamp_utc",
-        "last_extraction",
-    ]
-
-    previous_stock_df = ensure_columns(previous_stock_df, desired_order)
-    previous_stock_df = (
-        previous_stock_df[desired_order].drop_duplicates(subset=["iun"]).copy()
-    )
-
-    return previous_stock_df
+    df["last_extraction"] = "0"
+    df = ensure_columns(df, STOCK_COLS)
+    return df[STOCK_COLS].drop_duplicates(subset=["iun"], keep="first").copy()
 
 
 def migrate_legacy_cancelled_df(previous_cancelled_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Retrocompatibilità per il tab 'Weekly - annullate'.
-
-    Se il tab non esiste o è vuoto, restituisce uno schema vuoto corretto.
-    Se esiste ma con schema incompleto, aggiunge le colonne mancanti.
-    """
-    desired_order = [
-        "iun",
-        "sentat",
-        "senderpaid",
-        "senderdenomination",
-        "physicalCommunicationType",
-        "subject",
-        "taxonomycode",
-        "cap",
-        "pages",
-        "weight",
-        "insert_timestamp_stock_utc",
-        "insert_timestamp_annullate_utc",
-        "last_extraction",
-        "tms_cancelled",
-    ]
-
+    """Allinea lo storico annullate senza perdere righe e timestamp preesistenti."""
     if previous_cancelled_df.empty:
-        logging.info(
-            "Tab 'Weekly - annullate' assente o vuoto. "
-            "Creo struttura vuota compatibile con il nuovo job."
-        )
-        return pd.DataFrame(columns=desired_order)
-
-    previous_cancelled_df = previous_cancelled_df.copy()
-    previous_cancelled_df = ensure_columns(previous_cancelled_df, desired_order)
-    previous_cancelled_df["last_extraction"] = "0"
-    previous_cancelled_df = (
-        previous_cancelled_df[desired_order]
-        .drop_duplicates(subset=["iun"], keep="first")
-        .copy()
-    )
-
-    return previous_cancelled_df
+        return pd.DataFrame(columns=CANCELLED_COLS)
+    df = ensure_columns(previous_cancelled_df.copy(), CANCELLED_COLS)
+    df["last_extraction"] = "0"
+    return df[CANCELLED_COLS].drop_duplicates(subset=["iun"], keep="first").copy()
 
 
 # ---------------- QUERY ----------------
 def run_current_stock_query(spark: SparkSession) -> pd.DataFrame:
-    """
-    Estrae lo stock corrente delle notifiche eccedenti il limite di pagine
-    ancora presenti nel perimetro.
-    Granularità attesa: 1 riga = 1 IUN.
-    """
-    logging.info("Esecuzione query stock corrente notifiche da annullare...")
-
+    """Estrae le ultime spedizioni CON996 oltre la soglia del relativo prodotto."""
+    logging.info("Estrazione stock: AR/RIR >100, RS/RIS >8, 890 >18; scarto CON996")
     query_sql = """
         WITH base AS (
             SELECT
                 g.iun,
-                g.geokey AS cap,
-                g.numero_pagine AS pages,
-                g.grammatura AS weight
+                g.requestid,
+                g.attempt_number,
+                g.geokey,
+                g.prodotto,
+                g.requesttimestamp,
+                g.affido_consolidatore_data,
+                g.scarto_consolidatore_data,
+                g.statusrequest,
+                g.numero_pagine,
+                g.grammatura
             FROM send.gold_postalizzazione_analytics g
-            JOIN send.gold_notification_analytics n ON n.iun=g.iun
-            WHERE 1=1
-            AND g.pcretry_rank = 1
-            AND g.attempt_rank = 1
-            AND n.tms_viewed IS NULL
-            AND n.tms_cancelled IS NULL
-            )
+            JOIN send.gold_notification_analytics n ON n.iun = g.iun
+            WHERE g.pcretry_rank = 1
+              AND g.attempt_rank = 1
+              AND g.scarto_consolidatore_stato = 'CON996'
+              AND (
+                    (g.prodotto IN ('AR', 'RIR') AND g.numero_pagine > 100)
+                 OR (g.prodotto IN ('RS', 'RIS') AND g.numero_pagine > 8)
+                 OR (g.prodotto = '890' AND g.numero_pagine > 18)
+              )
+              AND n.tms_viewed IS NULL
+              AND n.tms_cancelled IS NULL
+        )
         SELECT
             n.iun,
             n.sentat,
             n.senderpaid,
             n.senderdenomination,
+            n.sendertaxid,
             n.physicalCommunicationType,
             n.subject,
             n.taxonomycode,
-            t.cap,
-            t.pages,
-            t.weight
-        FROM base t
-        JOIN send.silver_notification n
-            ON n.iun = t.iun
-        WHERE
-            (
-                t.pages > 18
-                AND n.physicalCommunicationType = 'REGISTERED_LETTER_890'
-            )
-            OR
-            (
-                t.pages > 100
-                AND n.physicalCommunicationType = 'AR_REGISTERED_LETTER'
-            );
+            g.requestid,
+            g.attempt_number,
+            concat("'", CAST(g.geokey AS STRING)) AS cap,
+            g.prodotto,
+            g.requesttimestamp,
+            g.affido_consolidatore_data,
+            g.scarto_consolidatore_data,
+            g.statusrequest,
+            g.numero_pagine AS pages,
+            g.grammatura AS weight
+        FROM base g
+        JOIN send.silver_notification n ON n.iun = g.iun
     """
-
-    df_spark = spark.sql(query_sql)
-    df = spark_to_df_per_gsheet(df_spark, missing="-")
-    logging.info(f"Righe estratte per stock corrente: {len(df)}")
+    df = spark_to_df_per_gsheet(spark.sql(query_sql), missing="-")
+    df = ensure_columns(df, BUSINESS_COLS)[BUSINESS_COLS]
+    if df["iun"].duplicated().any():
+        raise ValueError(
+            "Stock corrente con IUN duplicati: verificare join e ranking prima dell'export."
+        )
+    logging.info("Righe estratte per stock corrente: %s", len(df))
     return df
 
 
 def run_cancelled_info_query(spark: SparkSession, iun_list: list[str]) -> pd.DataFrame:
-    """
-    Recupera informazioni di annullamento per gli IUN usciti dallo stock.
-    Nessun filtro sullo stato: la data è solo informativa.
-    """
+    """Controlla l'annullamento effettivo degli IUN usciti, senza SQL IN dinamico."""
     if not iun_list:
         return pd.DataFrame(columns=["iun", "tms_cancelled"])
 
-    quoted_iuns = ", ".join([f"'{iun}'" for iun in iun_list])
-
-    query_sql = f"""
-        SELECT DISTINCT
-            iun,
-            tms_cancelled
-        FROM send.gold_notification_analytics
-        WHERE iun IN ({quoted_iuns})
-    """
-
-    logging.info(
-        "Esecuzione query informazioni di annullamento per IUN usciti dallo stock..."
+    iuns_df = spark.createDataFrame([(iun,) for iun in iun_list], ["iun"])
+    status_df = spark.table("send.gold_notification_analytics").select(
+        "iun", "tms_cancelled"
     )
-    df_spark = spark.sql(query_sql)
-    df = spark_to_df_per_gsheet(df_spark, missing="-")
-    logging.info(f"Righe info annullamento recuperate: {len(df)}")
-    return df
+    result_df = (
+        iuns_df.join(status_df, on="iun", how="left")
+        .groupBy("iun")
+        .agg(F.max("tms_cancelled").alias("tms_cancelled"))
+    )
+    result = spark_to_df_per_gsheet(result_df, missing="-")
+    logging.info("Controllati %s IUN usciti; risultati: %s", len(iun_list), len(result))
+    return result
 
 
 # ---------------- TRASFORMAZIONI ----------------
 def build_current_stock(
     previous_stock_df: pd.DataFrame, current_extract_df: pd.DataFrame, job_time_utc: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Costruisce il nuovo stock corrente preservando il timestamp originario di ingresso
-    e valorizzando il flag di novità dell'ultima estrazione.
-    """
-    technical_cols = ["insert_timestamp_utc", "last_extraction"]
-    previous_stock_df = previous_stock_df.copy()
-    current_extract_df = current_extract_df.copy()
+    """Mantiene il timestamp originario degli IUN ancora presenti nello stock."""
+    previous = ensure_columns(previous_stock_df.copy(), STOCK_COLS)
+    current = ensure_columns(current_extract_df.copy(), BUSINESS_COLS)
+    previous["iun"] = previous["iun"].astype(str)
+    current["iun"] = current["iun"].astype(str)
 
-    if previous_stock_df.empty:
-        previous_stock_df = pd.DataFrame(
-            columns=list(current_extract_df.columns) + technical_cols
-        )
-
-    previous_stock_df = ensure_columns(
-        previous_stock_df, list(current_extract_df.columns) + technical_cols
+    previous_iuns = set(previous["iun"])
+    old_dates = previous.set_index("iun")["insert_timestamp_utc"].to_dict()
+    current["insert_timestamp_utc"] = (
+        current["iun"]
+        .map(old_dates)
+        .replace(list(MISSING_VALUES), np.nan)
+        .fillna(job_time_utc)
     )
-    current_extract_df = ensure_columns(
-        current_extract_df, list(current_extract_df.columns)
+    current["last_extraction"] = current["iun"].apply(
+        lambda iun: "0" if iun in previous_iuns else "1"
     )
-
-    previous_iuns = (
-        set(previous_stock_df["iun"].astype(str))
-        if "iun" in previous_stock_df.columns
-        else set()
-    )
-    current_extract_df["iun"] = current_extract_df["iun"].astype(str)
-
-    old_insert_map = (
-        previous_stock_df.set_index("iun")["insert_timestamp_utc"].to_dict()
-        if "iun" in previous_stock_df.columns
-        else {}
-    )
-
-    current_extract_df["insert_timestamp_utc"] = current_extract_df["iun"].map(
-        old_insert_map
-    )
-    current_extract_df["insert_timestamp_utc"] = current_extract_df[
-        "insert_timestamp_utc"
-    ].replace(["", "-", "nan", "None", "NaT"], np.nan)
-    current_extract_df["insert_timestamp_utc"] = current_extract_df[
-        "insert_timestamp_utc"
-    ].fillna(job_time_utc)
-
-    current_extract_df["last_extraction"] = current_extract_df["iun"].apply(
-        lambda x: "0" if x in previous_iuns else "1"
-    )
-
-    new_rows_df = current_extract_df[
-        current_extract_df["last_extraction"] == "1"
-    ].copy()
-
-    desired_order = [
-        "iun",
-        "sentat",
-        "senderpaid",
-        "senderdenomination",
-        "physicalCommunicationType",
-        "subject",
-        "taxonomycode",
-        "cap",
-        "pages",
-        "weight",
-        "insert_timestamp_utc",
-        "last_extraction",
-    ]
-
-    current_extract_df = ensure_columns(current_extract_df, desired_order)
-    current_extract_df = (
-        current_extract_df[desired_order].drop_duplicates(subset=["iun"]).copy()
-    )
-
-    return current_extract_df, new_rows_df
+    current = current[STOCK_COLS].drop_duplicates(subset=["iun"]).copy()
+    new_rows_df = current[current["last_extraction"] == "1"].copy()
+    return current, new_rows_df
 
 
 def build_cancelled_rows(
@@ -495,182 +429,49 @@ def build_cancelled_rows(
     cancelled_info_df: pd.DataFrame,
     job_time_utc: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Costruisce le nuove righe da appendere nel tab annullate.
-    Un IUN è considerato annullato se era nel vecchio stock e non è più nel nuovo stock.
-    """
-    if previous_stock_df.empty:
-        empty_cols = [
-            "iun",
-            "sentat",
-            "senderpaid",
-            "senderdenomination",
-            "physicalCommunicationType",
-            "subject",
-            "taxonomycode",
-            "cap",
-            "pages",
-            "weight",
-            "insert_timestamp_stock_utc",
-            "insert_timestamp_annullate_utc",
-            "last_extraction",
-            "tms_cancelled",
-        ]
-        return pd.DataFrame(columns=empty_cols), previous_cancelled_df.copy()
+    """Sposta nelle annullate solo gli IUN usciti con tms_cancelled valorizzato."""
+    previous = ensure_columns(previous_stock_df.copy(), STOCK_COLS)
+    history = ensure_columns(previous_cancelled_df.copy(), CANCELLED_COLS)
+    history["last_extraction"] = "0"
 
-    previous_stock_df = previous_stock_df.copy()
-    current_stock_df = current_stock_df.copy()
-    previous_cancelled_df = previous_cancelled_df.copy()
-    cancelled_info_df = cancelled_info_df.copy()
-
-    previous_stock_df["iun"] = previous_stock_df["iun"].astype(str)
-    current_iuns = (
-        set(current_stock_df["iun"].astype(str))
-        if not current_stock_df.empty
-        else set()
-    )
-
-    disappeared_df = previous_stock_df[
-        ~previous_stock_df["iun"].isin(current_iuns)
+    current_iuns = set(current_stock_df["iun"].astype(str))
+    already_cancelled = set(history["iun"].astype(str))
+    disappeared = previous[
+        ~previous["iun"].astype(str).isin(current_iuns | already_cancelled)
     ].copy()
-
-    if disappeared_df.empty:
-        logging.info("Nessun IUN uscito dallo stock corrente.")
-        if previous_cancelled_df.empty:
-            previous_cancelled_df = pd.DataFrame(
-                columns=[
-                    "iun",
-                    "sentat",
-                    "senderpaid",
-                    "senderdenomination",
-                    "physicalCommunicationType",
-                    "subject",
-                    "taxonomycode",
-                    "cap",
-                    "pages",
-                    "weight",
-                    "insert_timestamp_stock_utc",
-                    "insert_timestamp_annullate_utc",
-                    "last_extraction",
-                    "tms_cancelled",
-                ]
-            )
-        previous_cancelled_df["last_extraction"] = "0"
-        return (
-            pd.DataFrame(columns=previous_cancelled_df.columns),
-            previous_cancelled_df,
-        )
-
-    if previous_cancelled_df.empty:
-        previous_cancelled_df = pd.DataFrame(
-            columns=[
-                "iun",
-                "sentat",
-                "senderpaid",
-                "senderdenomination",
-                "physicalCommunicationType",
-                "subject",
-                "taxonomycode",
-                "cap",
-                "pages",
-                "weight",
-                "insert_timestamp_stock_utc",
-                "insert_timestamp_annullate_utc",
-                "last_extraction",
-                "tms_cancelled",
-            ]
-        )
-    else:
-        previous_cancelled_df = ensure_columns(
-            previous_cancelled_df,
-            [
-                "iun",
-                "sentat",
-                "senderpaid",
-                "senderdenomination",
-                "physicalCommunicationType",
-                "subject",
-                "taxonomycode",
-                "cap",
-                "pages",
-                "weight",
-                "insert_timestamp_stock_utc",
-                "insert_timestamp_annullate_utc",
-                "last_extraction",
-                "tms_cancelled",
-            ],
-        )
-        previous_cancelled_df["last_extraction"] = "0"
-        previous_cancelled_df["iun"] = previous_cancelled_df["iun"].astype(str)
-
-    already_cancelled_iuns = (
-        set(previous_cancelled_df["iun"].astype(str))
-        if not previous_cancelled_df.empty
-        else set()
-    )
-    disappeared_df = disappeared_df[
-        ~disappeared_df["iun"].isin(already_cancelled_iuns)
-    ].copy()
-
-    if disappeared_df.empty:
-        logging.info(
-            "Gli IUN usciti dallo stock risultano già presenti nello storico annullate."
-        )
-        return (
-            pd.DataFrame(columns=previous_cancelled_df.columns),
-            previous_cancelled_df,
-        )
-
-    cancelled_info_df = ensure_columns(cancelled_info_df, ["iun", "tms_cancelled"])
-    if not cancelled_info_df.empty:
-        cancelled_info_df["iun"] = cancelled_info_df["iun"].astype(str)
-        disappeared_df = disappeared_df.merge(
-            cancelled_info_df[["iun", "tms_cancelled"]],
-            on="iun",
-            how="left",
-        )
-    else:
-        disappeared_df["tms_cancelled"] = "-"
-
-    disappeared_df["insert_timestamp_stock_utc"] = disappeared_df[
-        "insert_timestamp_utc"
-    ]
-    disappeared_df["insert_timestamp_annullate_utc"] = job_time_utc
-    disappeared_df["last_extraction"] = "1"
-
-    desired_order = [
-        "iun",
-        "sentat",
-        "senderpaid",
-        "senderdenomination",
-        "physicalCommunicationType",
-        "subject",
-        "taxonomycode",
-        "cap",
-        "pages",
-        "weight",
-        "insert_timestamp_stock_utc",
-        "insert_timestamp_annullate_utc",
-        "last_extraction",
-        "tms_cancelled",
-    ]
-
-    disappeared_df = ensure_columns(disappeared_df, desired_order)
-    disappeared_df = (
-        disappeared_df[desired_order].drop_duplicates(subset=["iun"]).copy()
+    logging.info(
+        "IUN usciti da verificare (non già nello storico): %s", len(disappeared)
     )
 
-    updated_cancelled_df = pd.concat(
-        [previous_cancelled_df, disappeared_df], ignore_index=True
-    )
-    updated_cancelled_df = ensure_columns(updated_cancelled_df, desired_order)
-    updated_cancelled_df = (
-        updated_cancelled_df[desired_order]
-        .drop_duplicates(subset=["iun"], keep="first")
-        .copy()
+    if disappeared.empty:
+        return pd.DataFrame(columns=CANCELLED_COLS), history[CANCELLED_COLS]
+
+    info = ensure_columns(cancelled_info_df.copy(), ["iun", "tms_cancelled"])
+    info["iun"] = info["iun"].astype(str)
+    info = info.drop_duplicates(subset=["iun"])
+    disappeared = disappeared.merge(info, on="iun", how="left", validate="one_to_one")
+
+    # La sola scomparsa dallo stock non prova un annullamento.
+    valid = disappeared["tms_cancelled"].notna() & ~disappeared["tms_cancelled"].astype(
+        str
+    ).str.strip().isin(MISSING_VALUES)
+    excluded_count = int((~valid).sum())
+    cancelled = disappeared.loc[valid].copy()
+    logging.info("IUN effettivamente annullati: %s", len(cancelled))
+    logging.info(
+        "IUN usciti senza annullamento (esclusi dal perimetro): %s", excluded_count
     )
 
-    return disappeared_df, updated_cancelled_df
+    if cancelled.empty:
+        return pd.DataFrame(columns=CANCELLED_COLS), history[CANCELLED_COLS]
+
+    cancelled["insert_timestamp_stock_utc"] = cancelled["insert_timestamp_utc"]
+    cancelled["insert_timestamp_annullate_utc"] = job_time_utc
+    cancelled["last_extraction"] = "1"
+    cancelled = ensure_columns(cancelled, CANCELLED_COLS)[CANCELLED_COLS]
+    history = pd.concat([history[CANCELLED_COLS], cancelled], ignore_index=True)
+    history = history.drop_duplicates(subset=["iun"], keep="first")
+    return cancelled, history[CANCELLED_COLS].copy()
 
 
 def build_pivot_df(
@@ -812,6 +613,7 @@ def build_log_df(
     current_stock_df: pd.DataFrame,
     new_rows_df: pd.DataFrame,
     disappeared_count: int,
+    excluded_not_cancelled_count: int,
     new_cancelled_rows_df: pd.DataFrame,
     cancelled_history_df: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -842,6 +644,7 @@ def build_log_df(
             f"IUN usciti da '{TAB_DA_ANNULLARE}' rispetto alla settimana precedente": [
                 disappeared_count
             ],
+            "IUN usciti senza annullamento verificato": [excluded_not_cancelled_count],
             f"Nuovi IUN inseriti nel tab '{TAB_ANNULLATE}'": [
                 len(new_cancelled_rows_df)
             ],
@@ -868,6 +671,9 @@ def main():
         creds = load_google_credentials(GOOGLE_SECRET_PATH)
         sheet = get_sheet_client(creds)
 
+        # Controllo preventivo: nessuna lettura/migrazione con intestazioni alterate.
+        validate_sheet_headers(creds)
+
         previous_stock_df = safe_download_sheet(sheet, TAB_DA_ANNULLARE)
         previous_cancelled_df = safe_download_sheet(sheet, TAB_ANNULLATE)
 
@@ -882,6 +688,10 @@ def main():
         )
 
         current_extract_df = run_current_stock_query(spark)
+        if current_extract_df.empty and not previous_stock_df.empty:
+            raise RuntimeError(
+                "Nuova estrazione vuota con stock precedente presente: blocco export per sicurezza."
+            )
 
         current_stock_df, new_rows_df = build_current_stock(
             previous_stock_df=previous_stock_df,
@@ -919,6 +729,16 @@ def main():
             job_time_utc=job_time_utc,
         )
 
+        # Non contiamo come esclusi gli IUN già presenti nello storico annullate.
+        already_cancelled_iuns = set(previous_cancelled_df["iun"].astype(str))
+        new_cancelled_iuns = set(new_cancelled_rows_df["iun"].astype(str))
+        excluded_not_cancelled_count = len(
+            set(disappeared_iuns) - already_cancelled_iuns - new_cancelled_iuns
+        )
+        logging.info(
+            "IUN usciti senza nuovo annullamento verificato: %s",
+            excluded_not_cancelled_count,
+        )
         logging.info(
             f"Nuovi IUN inseriti in '{TAB_ANNULLATE}': {len(new_cancelled_rows_df)}"
         )
@@ -940,6 +760,7 @@ def main():
             current_stock_df=current_stock_df,
             new_rows_df=new_rows_df,
             disappeared_count=disappeared_count,
+            excluded_not_cancelled_count=excluded_not_cancelled_count,
             new_cancelled_rows_df=new_cancelled_rows_df,
             cancelled_history_df=updated_cancelled_df,
         )
