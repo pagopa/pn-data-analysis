@@ -54,6 +54,32 @@ CSV_MIME_TYPE = "text/csv"
 CSV_FILE_BASENAME = "Oggetti_con_rendicontazione_corretta"
 
 
+def format_csv_business_timestamp_utc(values: pd.Series) -> pd.Series:
+    """Ripristina il formato ISO-8601 UTC atteso dal job downstream di redrive.
+
+    Il campo `fine_recapito_data_silver` del dettaglio e' un timestamp locale
+    Europe/Rome, ottenuto dalla SILVER UTC durante i controlli. Questa funzione
+    lo converte INDIETRO a UTC soltanto nell'output CSV, preservando il dettaglio.
+
+    Nei rari minuti ambigui del cambio da ora legale a solare il solo timestamp
+    locale non permette di ricostruire univocamente l'istante: in quel caso
+    falliamo esplicitamente, anziche' inviare un valore UTC potenzialmente errato.
+    """
+    # Timestamp per elemento: compatibile anche con Pandas che non supporta format="mixed".
+    parsed = values.apply(lambda x: pd.Timestamp(x) if pd.notna(x) else pd.NaT)
+    italian = parsed.dt.tz_localize(
+        "Europe/Rome", ambiguous="raise", nonexistent="raise"
+    )
+    utc = italian.dt.tz_convert("UTC")
+
+    # La precedente SSDA-510 esportava la data business in ISO UTC con Z.
+    # Non aggiungiamo una frazione di secondo se e' pari a zero.
+    output = utc.dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    output = output.str.replace(r"\.0+Z$", "Z", regex=True)
+    output = output.str.replace(r"(\.\d*?[1-9])0+Z$", r"\1Z", regex=True)
+    return output.where(parsed.notna(), "")
+
+
 # ---------------- FUNZIONI TEMPO ----------------
 def now_utc_dt() -> datetime:
     return datetime.now(timezone.utc)
@@ -1575,9 +1601,14 @@ def main():
         if int(weekly["numero_oggetti"].sum()) != count_post:
             raise ValueError("Riepilogo settimanale non coerente con lo stock")
         # Il CSV non passa MAI dal confronto storico. Solo tre colonne, stock completo.
+        # Compatibilita': la data business viene esportata come ISO-8601 UTC con suffisso Z.
+        # I timestamp Europe/Rome rimangono invariati nel GSheet e nei controlli.
         csv_three = enriched[
             ["requestid", "fine_recapito_stato_silver", "fine_recapito_data_silver"]
-        ]
+        ].copy()
+        csv_three["fine_recapito_data_silver"] = format_csv_business_timestamp_utc(
+            csv_three["fine_recapito_data_silver"]
+        )
         filename = f"{start.astimezone(LOCAL_TZ):%Y%m%d}_{CSV_FILE_BASENAME}_senza_feedback.csv"
         # Prima il CSV GO, poi i tab interni: monitoriamo eventuali fallimenti.
         drive_file = upload_csv_to_drive(
