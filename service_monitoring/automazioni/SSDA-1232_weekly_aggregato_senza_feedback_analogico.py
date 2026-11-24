@@ -71,7 +71,7 @@ NOT_VIEWED_COLOR = "#D5DFE6"
 VIEWED_COLUMN = "numero_oggetti_con_notifica_visualizzata"
 
 PERIOD_COLUMN = "Data max deposito"
-LEGACY_PERIOD_COLUMN = "periodo_riferimento"
+CLUSTER_COLUMN = "cluster_feedback_analogico"
 FONT_FAMILY = "Montserrat"
 BASE_FONT_SIZE = 12.0
 NUMERIC_FONT_SIZE = 13.0
@@ -80,7 +80,7 @@ LEGEND_FIGSIZE = (0.8, 7.2)
 IMAGE_DPI = 180
 MONTSERRAT_FONT_PATH_ENV = "MONTSERRAT_FONT_PATH"
 
-# Label, nota e colore sono modificabili senza intervenire sulla logica SQL o sullo storico.
+# Metadati utilizzati nelle tabelle e nei grafici.
 
 CLUSTER_ORDER = [
     "Errore rendicontazione/assenza eventi intermedi",
@@ -91,8 +91,7 @@ CLUSTER_ORDER = [
     "Oggetto in corso di postalizzazione",
 ]
 
-# I colori dei cluster invariati restano identici alla versione precedente.
-# Per i due nuovi cluster vengono riutilizzati due colori già presenti nella palette storica.
+# Colori e descrizioni dei sei cluster utilizzati nei report.
 CLUSTER_META: Dict[str, Dict[str, str]] = {
     "Errore rendicontazione/assenza eventi intermedi": {
         "label": "Oggetti con errori rendicontazione/assenza eventi intermedi",
@@ -126,27 +125,14 @@ CLUSTER_META: Dict[str, Dict[str, str]] = {
     },
 }
 
-# Etichette legacy mantenute esclusivamente per leggere e ordinare gli snapshot
-# preesistenti; non vengono più prodotte dalla nuova baseline.
-LEGACY_CLUSTER_LABELS = {
-    "Oggetto con rendicontazione corretta in analisi Team Prodotto": "Oggetti con rendicontazione corretta in analisi Team Prodotto",
-    "Oggetto bloccato al primo attempt": "Oggetti bloccati al primo attempt",
-    "Oggetto con rendicontazione corretta da perfezionare": "Oggetti con rendicontazione corretta da perfezionare",
-    "Oggetto non perfezionato con evidenza di pagamento": "Oggetti non perfezionati con evidenza di pagamento",
-}
-
 HISTORY_COLUMNS = [
     "settimana_riferimento",
     "data_inizio_settimana",
     "data_esecuzione_utc",
     PERIOD_COLUMN,
-    "cluster_mancato_perfezionamento",
+    "cluster_feedback_analogico",
     "numero_oggetti",
     VIEWED_COLUMN,
-    # Indicatore introdotto con la nuova baseline: gli snapshot legacy restano vuoti.
-    # Metrica temporaneamente disabilitata, mantenuta come riferimento per un
-    # eventuale ripristino futuro:
-    # "oggetti_pagati",
 ]
 
 
@@ -341,13 +327,17 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
             SELECT
                 s.iun,
                 s.requestid,
+                s.requesttimestamp,
                 s.prodotto,
                 s.tentativo_recapito_stato,
                 s.tentativo_recapito_data,
+                s.tentativo_recapito_data_rendicontazione,
                 s.messaingiacenza_recapito_stato,
+                s.messaingiacenza_recapito_data_rendicontazione,
                 s.certificazione_recapito_stato,
                 s.certificazione_recapito_dettagli,
                 s.certificazione_recapito_data,
+                s.certificazione_recapito_data_rendicontazione,
                 s.demat_23l_ar_stato,
                 s.demat_23l_ar_data_rendicontazione,
                 s.demat_plico_stato,
@@ -367,6 +357,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 s.demat_arcad_data_rendicontazione,
                 s.fine_recapito_stato,
                 s.accettazione_23l_recag012_data,
+                s.accettazione_23l_recag012_data_rendicontazione,
                 s.recindex_number,
                 s.flag_wi7_consolidatore,
                 s.flag_wi7_report_postalizzazioni_incomplete,
@@ -446,7 +437,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
             f"{max(gold_rows - no_feedback_rows, 0):,}".replace(",", "."),
         )
 
-        # Non servono più: liberiamo memoria prima della parte SILVER più pesante.
+        # Rilascio degli intermedi GOLD dopo la costruzione del perimetro.
         gold_base.unpersist(blocking=False)
         feedback.unpersist(blocking=False)
         perim_iun.unpersist(blocking=False)
@@ -462,18 +453,20 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         )
 
         # ------------------------------------------------------------------
-        # 4) SILVER: UNA SOLA LETTURA. Il pruning del perimetro requestId
-        #    e' GIA' espresso nella INNER JOIN immediatamente prima dei
-        #    LATERAL VIEW: manteniamo questa posizione e l'explode immediato.
-        #    NON trasciniamo eventslist/attachments in CTE intermedie.
-        #    Un'ulteriore riscrittura non garantirebbe un piano fisico migliore;
-        #    il guadagno reale va verificato con EXPLAIN e metriche Spark.
-        #    Il persist riguarda soltanto il risultato piatto, riutilizzato.
+        # 4) SILVER: filtro sui requestid prima dell'esplosione degli eventi.
+        #    Il dataset piatto è persistito e riutilizzato per eventi e allegati.
         # ------------------------------------------------------------------
         silver_flat_sql = """
             SELECT
                 REGEXP_REPLACE(p.requestid, '^pn-cons-000~', '') AS requestid,
                 e.paperprogrstatus.statuscode AS statuscode,
+                -- Causale dell'evento, normalizzata agli stessi valori ammessi dagli altri job.
+                CASE
+                    WHEN e.paperprogrstatus.deliveryfailurecause IN
+                        ('M01','M02','M03','M04','M05','M06','M07','M08','M09')
+                        THEN e.paperprogrstatus.deliveryfailurecause
+                    ELSE NULL
+                END AS deliveryfailurecause,
                 CASE
                     WHEN LENGTH(e.paperprogrstatus.statusdatetime) = 17 THEN CONCAT(
                         SUBSTR(e.paperprogrstatus.statusdatetime, 1, 16), ':00Z'
@@ -519,12 +512,13 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         # Il perimetro requestId ha ormai esaurito il suo scopo.
         perim_requestid.unpersist(blocking=False)
 
-        # Gli ultimi eventi A/B/C derivano dal dataset piatto già materializzato.
+        # Ricostruzione degli ultimi eventi A/B/C dal dataset SILVER piatto.
         latest_events_sql = """
             WITH classificati AS (
                 SELECT
                     requestid,
                     statuscode,
+                    deliveryfailurecause,
                     statusdatetime,
                     clientrequesttimestamp,
                     CASE
@@ -552,8 +546,17 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 SELECT
                     requestid,
                     statuscode,
-                    statusdatetime,
-                    clientrequesttimestamp,
+                    deliveryfailurecause,
+                    -- SILVER ISO UTC -> timestamp Europe/Rome, come in SSDA-1077/1198.
+                    -- La selezione dell'ultimo evento rimane ordinata sul valore UTC originale.
+                    FROM_UTC_TIMESTAMP(
+                        CAST(REPLACE(REGEXP_REPLACE(statusdatetime, 'Z$', ''), 'T', ' ') AS TIMESTAMP),
+                        'Europe/Rome'
+                    ) AS statusdatetime,
+                    FROM_UTC_TIMESTAMP(
+                        CAST(REPLACE(REGEXP_REPLACE(clientrequesttimestamp, 'Z$', ''), 'T', ' ') AS TIMESTAMP),
+                        'Europe/Rome'
+                    ) AS clientrequesttimestamp,
                     tipo,
                     ROW_NUMBER() OVER (
                         PARTITION BY requestid, tipo
@@ -565,12 +568,14 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
             SELECT
                 requestid,
                 MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN statuscode END) AS fine_recapito_stato,
+                MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN deliveryfailurecause END) AS fine_recapito_deliveryfailurecause,
                 MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN statusdatetime END) AS fine_recapito_data,
                 MAX(CASE WHEN tipo = 'FINE_RECAPITO' THEN clientrequesttimestamp END) AS fine_recapito_rendicontazione,
                 MAX(CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statuscode END) AS certificazione_recapito_stato,
                 MAX(CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN statusdatetime END) AS certificazione_recapito_data,
                 MAX(CASE WHEN tipo = 'CERTIFICAZIONE_RECAPITO' THEN clientrequesttimestamp END) AS certificazione_recapito_rendicontazione,
                 MAX(CASE WHEN tipo = 'DEMAT_RECAPITO' THEN statuscode END) AS demat_recapito_stato,
+                MAX(CASE WHEN tipo = 'DEMAT_RECAPITO' THEN deliveryfailurecause END) AS demat_recapito_deliveryfailurecause,
                 MAX(CASE WHEN tipo = 'DEMAT_RECAPITO' THEN statusdatetime END) AS demat_recapito_data,
                 MAX(CASE WHEN tipo = 'DEMAT_RECAPITO' THEN clientrequesttimestamp END) AS demat_recapito_rendicontazione
             FROM ranked
@@ -583,8 +588,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
             "6b/7 Ultimi eventi SILVER per requestId",
         )
 
-        # DocumentType: stesso criterio della versione di input, ma senza una nuova
-        # lettura di silver_postalizzazione.
+        # Il documenttype deriva dal dataset SILVER già materializzato.
         temp_demat_sql = """
             SELECT requestid, documenttype, rn_demat
             FROM (
@@ -610,8 +614,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
             f"{latest_rows:,}".replace(",", "."),
             f"{demat_rows:,}".replace(",", "."),
         )
-        # Ora entrambe le derivazioni necessarie sono materializzate: il dataset
-        # SILVER piatto può essere liberato prima dei controlli finali.
+        # Rilascio SILVER piatto dopo la materializzazione delle derivazioni.
         silver_flat.unpersist(blocking=False)
 
         wi7 = spark.sql(
@@ -620,7 +623,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         wi7.createOrReplaceTempView("wi7_poste")
 
         # ------------------------------------------------------------------
-        # 5) Controlli e classificazione: logica business invariata.
+        # 5) Controlli di rendicontazione e classificazione per cluster.
         # ------------------------------------------------------------------
         final_started = log_step_start(
             "7/7 Controlli business, classificazione e aggregazione"
@@ -653,21 +656,35 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 s.prodotto,
                 s.tentativo_recapito_stato,
                 s.tentativo_recapito_data,
+                s.tentativo_recapito_data_rendicontazione,
                 s.messaingiacenza_recapito_stato,
+                s.messaingiacenza_recapito_data_rendicontazione,
                 s.certificazione_recapito_stato,
                 s.certificazione_recapito_dettagli,
                 s.certificazione_recapito_data,
+                s.certificazione_recapito_data_rendicontazione,
                 s.demat_23l_ar_stato,
+                s.demat_23l_ar_data_rendicontazione,
                 s.demat_plico_stato,
+                s.demat_plico_data_rendicontazione,
                 s.demat_documenttype_da_controllare,
                 s.demat_arcad_stato,
                 s.demat_arcad_data_rendicontazione,
                 s.fine_recapito_stato,
                 s.accettazione_23l_recag012_data,
+                s.accettazione_23l_recag012_data_rendicontazione,
                 s.flag_wi7_consolidatore,
                 s.flag_wi7_report_postalizzazioni_incomplete,
                 CASE WHEN w.requestid IS NOT NULL THEN 1 ELSE 0 END AS flag_wi7_poste,
                 s.attempt_number,
+                -- Stesse soglie di attivazione tracker dei job SSDA-1077 e SSDA-1198.
+                CASE
+                    WHEN s.prodotto = 'AR' AND CAST(s.requesttimestamp AS DATE) >= DATE '2026-07-28' THEN 1
+                    WHEN s.prodotto IN ('RIR','RIS') AND CAST(s.requesttimestamp AS DATE) >= DATE '2026-10-28' THEN 1
+                    WHEN s.prodotto = 'RS' AND CAST(s.requesttimestamp AS DATE) >= DATE '2026-10-15' THEN 1
+                    ELSE 0
+                END AS flag_tracker_attivo,
+                t.fine_recapito_rendicontazione AS fine_recapito_rendicontazione_silver,
                 CASE
                     WHEN s.certificazione_recapito_dettagli IN ('M02') THEN 1
                     ELSE 0
@@ -687,6 +704,13 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                                 s.certificazione_recapito_dettagli NOT IN ('M01', 'M03', 'M04')
                                 OR s.certificazione_recapito_dettagli IS NULL
                             ) THEN 1
+                        WHEN s.certificazione_recapito_stato IN (
+                            'RECRS002A','RECRN002A','RECAG003A',
+                            'RECRS002D','RECRN002D','RECAG003D'
+                        ) AND (
+                            s.certificazione_recapito_dettagli IS DISTINCT FROM t.demat_recapito_deliveryfailurecause
+                            OR t.demat_recapito_deliveryfailurecause IS DISTINCT FROM t.fine_recapito_deliveryfailurecause
+                        ) THEN 1
                         ELSE 0
                     END AS controllo_causale,
                 CASE
@@ -788,6 +812,8 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 CASE
                     -- Casi business in cui è prevista la sola data di fine recapito.
                     WHEN s.fine_recapito_stato IN ('RECRS001C','RECRS003C', 'RECRSI003C') THEN 0
+                    WHEN t.demat_recapito_data IS NULL
+                         AND CAST(t.certificazione_recapito_data AS TIMESTAMP) = CAST(t.fine_recapito_data AS TIMESTAMP) THEN 0
                     WHEN CAST(t.certificazione_recapito_data AS TIMESTAMP) = CAST(t.demat_recapito_data AS TIMESTAMP)
                          AND CAST(t.demat_recapito_data AS TIMESTAMP) = CAST(t.fine_recapito_data AS TIMESTAMP) THEN 0
                     ELSE 1
@@ -843,6 +869,20 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         temp_postalizzazione AS (
             SELECT
                 s.*,
+                -- Dopo l'attivazione del tracker, FINE RECAPITO SILVER deve
+                -- essere l'ultima rendicontazione rispetto agli eventi GOLD pertinenti.
+                CASE
+                    WHEN s.flag_tracker_attivo = 0 THEN 0
+                    WHEN s.fine_recapito_rendicontazione_silver IS NULL THEN 1
+                    WHEN CAST(s.certificazione_recapito_data_rendicontazione AS TIMESTAMP) > CAST(s.fine_recapito_rendicontazione_silver AS TIMESTAMP)
+                      OR CAST(s.demat_23l_ar_data_rendicontazione AS TIMESTAMP) > CAST(s.fine_recapito_rendicontazione_silver AS TIMESTAMP)
+                      OR CAST(s.demat_plico_data_rendicontazione AS TIMESTAMP) > CAST(s.fine_recapito_rendicontazione_silver AS TIMESTAMP)
+                      OR CAST(s.demat_arcad_data_rendicontazione AS TIMESTAMP) > CAST(s.fine_recapito_rendicontazione_silver AS TIMESTAMP)
+                      OR CAST(s.tentativo_recapito_data_rendicontazione AS TIMESTAMP) > CAST(s.fine_recapito_rendicontazione_silver AS TIMESTAMP)
+                      OR CAST(s.messaingiacenza_recapito_data_rendicontazione AS TIMESTAMP) > CAST(s.fine_recapito_rendicontazione_silver AS TIMESTAMP)
+                      OR CAST(s.accettazione_23l_recag012_data_rendicontazione AS TIMESTAMP) > CAST(s.fine_recapito_rendicontazione_silver AS TIMESTAMP)
+                    THEN 1 ELSE 0
+                END AS controllo_rendicontazione_ordinata,
                 IF(
                     fine_recapito_stato IN (
                         'RECRS003C','RECRS004C','RECRS005C','RECRN003C','RECRN004C','RECRN005C',
@@ -939,6 +979,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         THEN 'Oggetto fuori sla'
                     WHEN (
                         controllo_causale = 1
+                        OR controllo_rendicontazione_ordinata = 1
                         OR controllo_date_business = 1
                         OR controllo_tripletta = 1
                         OR controllo_tempistiche_compiuta_giacenza = 1
@@ -950,6 +991,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         THEN 'Errore rendicontazione/assenza eventi intermedi'
                     WHEN (
                         controllo_causale = 0
+                        AND controllo_rendicontazione_ordinata = 0
                         AND controllo_date_business = 0
                         AND controllo_tripletta = 0
                         AND controllo_tempistiche_compiuta_giacenza = 0
@@ -968,6 +1010,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         THEN 'Oggetto con rendicontazione corretta - Bloccato al primo attempt'
                     WHEN (
                         controllo_causale = 0
+                        AND controllo_rendicontazione_ordinata = 0
                         AND controllo_date_business = 0
                         AND controllo_tripletta = 0
                         AND controllo_tempistiche_compiuta_giacenza = 0
@@ -985,7 +1028,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                     )
                         THEN 'Oggetto con rendicontazione corretta - Bloccato al secondo attempt'
                     ELSE 'Oggetto in corso di postalizzazione'
-                END AS cluster_mancato_perfezionamento
+                END AS cluster_feedback_analogico
             FROM temp_assenza_eventi t
         ),
 
@@ -995,18 +1038,18 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
             SELECT
                 requestid,
                 flag_notifica_visualizzata,
-                cluster_mancato_perfezionamento
+                cluster_feedback_analogico
             FROM finale
         )
 
         SELECT
-            cluster_mancato_perfezionamento,
+            cluster_feedback_analogico,
             COUNT(DISTINCT requestid) AS numero_oggetti,
             COUNT(DISTINCT CASE WHEN flag_notifica_visualizzata = 1
                                 THEN requestid END)
                 AS numero_oggetti_con_notifica_visualizzata
         FROM finale_filtrato
-        GROUP BY cluster_mancato_perfezionamento
+        GROUP BY cluster_feedback_analogico
         ;
 
         """
@@ -1060,7 +1103,7 @@ def cluster_order() -> list[str]:
 
 def normalize_current_data(df: pd.DataFrame) -> pd.DataFrame:
     expected_columns = {
-        "cluster_mancato_perfezionamento",
+        "cluster_feedback_analogico",
         "numero_oggetti",
         VIEWED_COLUMN,
     }
@@ -1069,18 +1112,18 @@ def normalize_current_data(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"Colonne mancanti nell'aggregato: {sorted(missing_columns)}")
 
     result = df.copy()
-    result["cluster_mancato_perfezionamento"] = (
-        result["cluster_mancato_perfezionamento"].astype(str).str.strip()
+    result["cluster_feedback_analogico"] = (
+        result["cluster_feedback_analogico"].astype(str).str.strip()
     )
 
-    unknown = set(result["cluster_mancato_perfezionamento"]) - set(CLUSTER_META)
+    unknown = set(result["cluster_feedback_analogico"]) - set(CLUSTER_META)
     if unknown:
         raise ValueError(f"Cluster non configurati: {sorted(unknown)}")
 
-    if result["cluster_mancato_perfezionamento"].duplicated().any():
+    if result["cluster_feedback_analogico"].duplicated().any():
         duplicates = result.loc[
-            result["cluster_mancato_perfezionamento"].duplicated(keep=False),
-            "cluster_mancato_perfezionamento",
+            result["cluster_feedback_analogico"].duplicated(keep=False),
+            "cluster_feedback_analogico",
         ].tolist()
         raise ValueError(f"Cluster duplicati nell'aggregato: {duplicates}")
 
@@ -1095,53 +1138,47 @@ def normalize_current_data(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     result = (
-        result.set_index("cluster_mancato_perfezionamento")
+        result.set_index("cluster_feedback_analogico")
         .reindex(cluster_order(), fill_value=0)
         .reset_index()
     )
 
-    result["cluster_label_clean"] = result["cluster_mancato_perfezionamento"].map(
+    result["cluster_label_clean"] = result["cluster_feedback_analogico"].map(
         lambda cluster: CLUSTER_META[cluster]["label"]
     )
-    result["cluster_label_table"] = result["cluster_mancato_perfezionamento"].map(
+    result["cluster_label_table"] = result["cluster_feedback_analogico"].map(
         lambda cluster: (
             CLUSTER_META[cluster]["label"] + CLUSTER_META[cluster]["footnote"]
         )
     )
-    result["cluster_color"] = result["cluster_mancato_perfezionamento"].map(
+    result["cluster_color"] = result["cluster_feedback_analogico"].map(
         lambda cluster: CLUSTER_META[cluster]["color"]
     )
 
-    # Metrica temporaneamente disabilitata, conservata come traccia per un
-    # eventuale ripristino:
-    # result["oggetti_pagati"] = pd.to_numeric(...)
     return result
 
 
 def normalize_historical_snapshot(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Normalizza uno snapshot già pubblicato senza aggiungere i cluster mancanti.
+    Normalizza uno snapshot esistente senza introdurre cluster artificiali.
 
-    Lo storico legacy viene mantenuto senza aggiungere artificialmente i cluster
-    della nuova baseline. La non confrontabilità viene gestita da calculate_delta.
+    La confrontabilità con la settimana corrente viene verificata da calculate_delta.
     """
-    required = {"cluster_mancato_perfezionamento", "numero_oggetti"}
+    required = {CLUSTER_COLUMN, "numero_oggetti"}
     missing = required.difference(df.columns)
     if missing:
         raise ValueError(f"Colonne mancanti nello snapshot storico: {sorted(missing)}")
 
     result = df[list(required)].copy()
-    result["cluster_mancato_perfezionamento"] = (
-        result["cluster_mancato_perfezionamento"].astype(str).str.strip()
+    result["cluster_feedback_analogico"] = (
+        result["cluster_feedback_analogico"].astype(str).str.strip()
     )
     result["numero_oggetti"] = (
         pd.to_numeric(result["numero_oggetti"], errors="coerce")
         .fillna(0)
         .astype("int64")
     )
-    result = result.drop_duplicates(
-        subset=["cluster_mancato_perfezionamento"], keep="last"
-    )
+    result = result.drop_duplicates(subset=["cluster_feedback_analogico"], keep="last")
     return result.reset_index(drop=True)
 
 
@@ -1156,9 +1193,8 @@ def read_current_sheet_snapshot(
     """
     Legge il tab corrente prima della sovrascrittura per inizializzare lo storico.
 
-    Sono accettate sia la nuova intestazione ``Data max deposito`` sia la vecchia
-    ``periodo_riferimento``. Se entrambe mancano, viene usato il valore presente
-    nel tab di controllo.
+    Il tab corrente espone la colonna ``Data max deposito``.
+    Se manca, viene usato il riferimento del tab di controllo.
     """
     try:
         snapshot = sheet.download(CURRENT_SHEET_NAME)
@@ -1169,8 +1205,9 @@ def read_current_sheet_snapshot(
     if snapshot is None or snapshot.empty:
         return None, None
 
+    snapshot = snapshot.copy()
     required_columns = {
-        "cluster_mancato_perfezionamento",
+        "cluster_feedback_analogico",
         "numero_oggetti",
     }
     missing_columns = required_columns.difference(snapshot.columns)
@@ -1182,17 +1219,8 @@ def read_current_sheet_snapshot(
         )
         return None, None
 
-    snapshot = snapshot.copy()
     if PERIOD_COLUMN in snapshot.columns:
         period_values = snapshot[PERIOD_COLUMN].astype("string").str.strip()
-    elif LEGACY_PERIOD_COLUMN in snapshot.columns:
-        logging.info(
-            "Nel tab '%s' viene migrata la colonna '%s' in '%s'.",
-            CURRENT_SHEET_NAME,
-            LEGACY_PERIOD_COLUMN,
-            PERIOD_COLUMN,
-        )
-        period_values = snapshot[LEGACY_PERIOD_COLUMN].astype("string").str.strip()
     else:
         logging.info(
             "Nel tab '%s' manca il campo '%s': viene assunto il valore del tab "
@@ -1221,7 +1249,7 @@ def read_current_sheet_snapshot(
         )
 
     normalized = normalize_historical_snapshot(
-        snapshot[["cluster_mancato_perfezionamento", "numero_oggetti"]]
+        snapshot[["cluster_feedback_analogico", "numero_oggetti"]]
     )
     return normalized, unique_periods[0]
 
@@ -1240,23 +1268,22 @@ def read_history(sheet: Sheet) -> pd.DataFrame:
         return empty_history()
 
     history = history.copy()
+    if CLUSTER_COLUMN not in history.columns:
+        raise ValueError(
+            f"Nel tab '{HISTORY_SHEET_NAME}' manca la colonna '{CLUSTER_COLUMN}'. "
+            "Verificare l'intestazione del Google Sheet prima di eseguire il job."
+        )
     if PERIOD_COLUMN not in history.columns:
-        if LEGACY_PERIOD_COLUMN in history.columns:
-            history[PERIOD_COLUMN] = history[LEGACY_PERIOD_COLUMN]
-            logging.info(
-                "Storico migrato dalla colonna '%s' alla colonna '%s'.",
-                LEGACY_PERIOD_COLUMN,
-                PERIOD_COLUMN,
-            )
-        else:
-            history[PERIOD_COLUMN] = pd.NA
+        raise ValueError(
+            f"Nel tab '{HISTORY_SHEET_NAME}' manca la colonna '{PERIOD_COLUMN}'."
+        )
 
     for column in HISTORY_COLUMNS:
         if column not in history.columns:
             history[column] = pd.NA
 
     history = history[HISTORY_COLUMNS]
-    # Celle legacy lasciate vuote: non sostituire l'assenza con 0 o con 'N/A'.
+    # Le osservazioni non disponibili rimangono celle vuote, non zeri.
     history[VIEWED_COLUMN] = pd.to_numeric(
         history[VIEWED_COLUMN].replace("", pd.NA), errors="coerce"
     ).astype("Int64")
@@ -1322,12 +1349,10 @@ def calculate_delta(
     current_period: str,
 ) -> Tuple[pd.DataFrame, bool, Optional[int], Optional[str]]:
     """
-    Calcola il delta solo quando lo snapshot precedente appartiene già alla nuova
-    baseline a sei cluster e la Data max deposito coincide.
+    Calcola il delta solo se gli snapshot hanno i medesimi cluster e periodo.
 
-    La prima esecuzione con la nuova classificazione restituisce quindi ``n.d.``
-    per tutti i cluster e per il totale. Dalla settimana successiva il confronto
-    riparte automaticamente sulla nuova baseline, senza alterare lo storico legacy.
+    Un cambio delle regole di classificazione richiede una verifica operativa
+    della confrontabilità dei dati, anche quando lo schema rimane identico.
     """
     result = current_df.copy()
     result["numero_oggetti_precedente"] = pd.NA
@@ -1341,12 +1366,12 @@ def calculate_delta(
         return result, False, None, None
 
     previous_clusters = set(
-        previous["cluster_mancato_perfezionamento"].astype(str).str.strip()
+        previous["cluster_feedback_analogico"].astype(str).str.strip()
     )
     current_schema = set(CLUSTER_ORDER)
     if previous_clusters != current_schema:
         logging.info(
-            "Nuova baseline SSDA-526: schema precedente non confrontabile (%s). "
+            "Cluster dello storico non confrontabili con quelli correnti (%s). "
             "Delta impostato a n.d. per tutti i cluster.",
             previous_week,
         )
@@ -1364,14 +1389,14 @@ def calculate_delta(
         return result, False, None, previous_week
 
     previous_norm = normalize_historical_snapshot(
-        previous[["cluster_mancato_perfezionamento", "numero_oggetti"]]
+        previous[["cluster_feedback_analogico", "numero_oggetti"]]
     ).rename(columns={"numero_oggetti": "numero_oggetti_precedente"})
 
     result = result.drop(
         columns=["numero_oggetti_precedente", "delta_settimanale", "delta_disponibile"]
     ).merge(
         previous_norm,
-        on="cluster_mancato_perfezionamento",
+        on="cluster_feedback_analogico",
         how="left",
         validate="one_to_one",
     )
@@ -1394,17 +1419,15 @@ def build_current_history_snapshot(
     execution_utc: str,
     period_reference: str,
 ) -> pd.DataFrame:
-    # Il fallback legacy può non possedere la metrica, introdotta con la nuova baseline.
+    # Alcuni snapshot possono non avere una rilevazione delle visualizzazioni.
     snapshot = current_df.reindex(
-        columns=["cluster_mancato_perfezionamento", "numero_oggetti", VIEWED_COLUMN]
+        columns=["cluster_feedback_analogico", "numero_oggetti", VIEWED_COLUMN]
     ).copy()
     snapshot.insert(0, PERIOD_COLUMN, period_reference)
     snapshot.insert(0, "data_esecuzione_utc", execution_utc)
     snapshot.insert(0, "data_inizio_settimana", week_start)
     snapshot.insert(0, "settimana_riferimento", week_reference)
 
-    # Metrica temporaneamente disabilitata:
-    # snapshot["oggetti_pagati"] = current_df["oggetti_pagati"]
     return snapshot[HISTORY_COLUMNS]
 
 
@@ -1426,12 +1449,12 @@ def upsert_history(
         result["data_inizio_settimana"], errors="coerce"
     )
     order_map = {cluster: idx for idx, cluster in enumerate(CLUSTER_ORDER)}
-    result["cluster_sort"] = result["cluster_mancato_perfezionamento"].map(
+    result["cluster_sort"] = result["cluster_feedback_analogico"].map(
         lambda cluster: order_map.get(cluster, len(CLUSTER_ORDER) + 100)
     )
-    result["cluster_label_sort"] = result["cluster_mancato_perfezionamento"].map(
+    result["cluster_label_sort"] = result["cluster_feedback_analogico"].map(
         lambda cluster: CLUSTER_META.get(cluster, {})
-        .get("label", LEGACY_CLUSTER_LABELS.get(cluster, str(cluster)))
+        .get("label", str(cluster))
         .casefold()
     )
     result = result.sort_values(
@@ -1576,7 +1599,7 @@ def render_table(
     )
 
     columns = [
-        "Cluster di mancato perfezionamento",
+        "Cluster di feedback analogico",
         "Numero oggetti",
         "Di cui con notifica\nvisualizzata",
         "Delta settimanale",
@@ -2142,7 +2165,7 @@ def update_control_sheet(
 ) -> None:
     result = df_update.copy()
 
-    # Mantiene la struttura preesistente e aggiorna la riga usata dal job originario.
+    # Aggiorna i metadati di riferimento mantenendo le altre colonne del tab.
     result.loc[1, "Data max deposito"] = period_reference
     result.loc[1, "Ultimo aggiornamento dati (MAX requesttimestamp)"] = max_date_str
     result.loc[1, "Data esecuzione script (UTC)"] = execution_utc
@@ -2161,7 +2184,7 @@ def main() -> None:
     try:
         logging.info("Inizializzazione SparkSession...")
         spark = SparkSession.builder.appName(
-            "SSDA-526 Aggregato non perfezionati con immagini"
+            "SSDA-526 Aggregato settimanale feedback analogico"
         ).getOrCreate()
 
         creds = load_google_credentials(GOOGLE_SECRET_PATH)
@@ -2178,24 +2201,23 @@ def main() -> None:
         execution_utc = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
         current_week, week_start = current_week_metadata(now_rome)
 
-        # Se lo storico non esiste, il tab corrente viene materializzato come
-        # settimana precedente. La prima esecuzione della nuova baseline resta comunque
-        # non confrontabile: calculate_delta imposta n.d. su tutti i sei cluster.
+        # Se lo storico non è disponibile, il tab corrente può inizializzare
+        # lo snapshot della settimana precedente, quando confrontabile.
         history_for_run = history.copy()
         if history_for_run.empty and current_sheet_fallback is not None:
-            legacy_week, legacy_week_start = previous_week_metadata(now_rome)
-            legacy_snapshot = build_current_history_snapshot(
+            previous_week_ref, previous_week_start = previous_week_metadata(now_rome)
+            previous_snapshot = build_current_history_snapshot(
                 current_sheet_fallback,
-                week_reference=legacy_week,
-                week_start=legacy_week_start,
+                week_reference=previous_week_ref,
+                week_start=previous_week_start,
                 execution_utc="",
                 period_reference=str(current_sheet_fallback_period),
             )
-            history_for_run = legacy_snapshot
+            history_for_run = previous_snapshot
             logging.info(
                 "Storico inizializzato dal tab '%s' come settimana %s (%s=%s).",
                 CURRENT_SHEET_NAME,
-                legacy_week,
+                previous_week_ref,
                 PERIOD_COLUMN,
                 current_sheet_fallback_period,
             )
@@ -2260,7 +2282,7 @@ def main() -> None:
 
         current_sheet_df = report[
             [
-                "cluster_mancato_perfezionamento",
+                "cluster_feedback_analogico",
                 "numero_oggetti",
                 VIEWED_COLUMN,
                 "delta_settimanale",
@@ -2279,8 +2301,6 @@ def main() -> None:
         )
         current_sheet_df = current_sheet_df.drop(columns=["delta_disponibile"])
 
-        # Metrica temporaneamente disabilitata dall'output GSheet:
-        # current_sheet_df["oggetti_pagati"] = report["oggetti_pagati"]
         export_to_sheets(
             current_sheet_df,
             creds,
