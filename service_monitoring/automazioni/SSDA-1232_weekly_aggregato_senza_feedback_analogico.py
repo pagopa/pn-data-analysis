@@ -39,18 +39,18 @@ GOOGLE_SECRET_PATH = "/etc/dex/secrets/secret-cde-googlesheet"
 SHEET_ID = "1qfcFKvg2tSHXkyHdoV9UDufio4Z5BumZC9ZlCvFlScs"
 DRIVE_FOLDER_ID = "1jbcnv2G99avZvn_gPueaigYKXnEcYN2Z"
 
-CURRENT_SHEET_NAME = "Estrazione weekly SSDA-526"
-HISTORY_SHEET_NAME = "Storico weekly SSDA-526"
+CURRENT_SHEET_NAME = "Estrazione weekly SSDA-1232"
+HISTORY_SHEET_NAME = "Storico weekly SSDA-1232"
 UPDATE_SHEET_NAME = "Log di controllo"
 
-OUTPUT_DIR = Path("/tmp/ssda526_outputs")
+OUTPUT_DIR = Path("/tmp/ssda1232_outputs")
 OUTPUT_FILES = {
-    "table": "SSDA-526_tabella_latest.png",
-    "legend": "SSDA-526_colonna_colori_latest.png",
-    "chart": "SSDA-526_grafico_latest.png",
-    "viewed_chart": "SSDA-526_grafico_visualizzazioni_latest.png",
-    "combined": "SSDA-526_completo_latest.png",
-    "combined_viewed": "SSDA-526_completo_visualizzazioni_latest.png",
+    "table": "SSDA-1232_tabella_latest.png",
+    "legend": "SSDA-1232_colonna_colori_latest.png",
+    "chart": "SSDA-1232_grafico_latest.png",
+    "viewed_chart": "SSDA-1232_grafico_visualizzazioni_latest.png",
+    "combined": "SSDA-1232_completo_latest.png",
+    "combined_viewed": "SSDA-1232_completo_visualizzazioni_latest.png",
 }
 
 ROME_TZ = ZoneInfo("Europe/Rome")
@@ -275,7 +275,7 @@ def read_period_reference(sheet: Sheet) -> Tuple[str, pd.DataFrame]:
 
 def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
     """
-    Esegue SSDA-526 a fasi materializzate per evitare la ricostruzione ripetuta
+    Esegue SSDA-1232 a fasi materializzate per evitare la ricostruzione ripetuta
     dello stesso DAG Spark.
 
     L'ottimizzazione riguarda esclusivamente il piano di esecuzione:
@@ -380,7 +380,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         """
         gold_base, gold_rows = persist_and_materialize(
             spark.sql(gold_sql),
-            "ssda526_gold_base",
+            "ssda1232_gold_base",
             "1/7 GOLD filtrato e materializzato",
         )
 
@@ -389,9 +389,9 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         # ------------------------------------------------------------------
         perim_iun, iun_rows = persist_and_materialize(
             spark.sql(
-                "SELECT DISTINCT iun FROM ssda526_gold_base WHERE iun IS NOT NULL"
+                "SELECT DISTINCT iun FROM ssda1232_gold_base WHERE iun IS NOT NULL"
             ),
-            "ssda526_perimetro_iun",
+            "ssda1232_perimetro_iun",
             "2/7 Perimetro IUN materializzato",
             StorageLevel.MEMORY_ONLY,
         )
@@ -402,13 +402,13 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 CAST(REGEXP_EXTRACT(tl.timelineelementid, 'RECINDEX_([0-9]+)', 1) AS INT) AS recindex_number,
                 CAST(REGEXP_EXTRACT(tl.timelineelementid, 'ATTEMPT_([0-9]+)', 1) AS INT) AS attempt_number
             FROM send.silver_timeline tl
-            INNER JOIN ssda526_perimetro_iun p
+            INNER JOIN ssda1232_perimetro_iun p
                 ON tl.iun = p.iun
             WHERE tl.category = 'SEND_ANALOG_FEEDBACK'
         """
         feedback, feedback_rows = persist_and_materialize(
             spark.sql(feedback_sql),
-            "ssda526_feedback",
+            "ssda1232_feedback",
             "3/7 Feedback analogici sul perimetro",
         )
 
@@ -417,8 +417,8 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         # ------------------------------------------------------------------
         no_feedback_sql = """
             SELECT gb.*
-            FROM ssda526_gold_base gb
-            LEFT ANTI JOIN ssda526_feedback saf
+            FROM ssda1232_gold_base gb
+            LEFT ANTI JOIN ssda1232_feedback saf
               ON gb.iun = saf.iun
              AND CAST(gb.recindex_number AS INT) = saf.recindex_number
              AND CAST(gb.attempt_number AS INT) = saf.attempt_number
@@ -447,7 +447,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 "SELECT DISTINCT requestid FROM gold_base_senza_feedback "
                 "WHERE requestid IS NOT NULL"
             ),
-            "ssda526_perimetro_requestid",
+            "ssda1232_perimetro_requestid",
             "5/7 Perimetro requestId materializzato",
             StorageLevel.MEMORY_ONLY,
         )
@@ -481,7 +481,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                 END AS clientrequesttimestamp,
                 a.documenttype AS documenttype
             FROM send.silver_postalizzazione p
-            INNER JOIN ssda526_perimetro_requestid pr
+            INNER JOIN ssda1232_perimetro_requestid pr
                 ON REGEXP_REPLACE(p.requestid, '^pn-cons-000~', '') = pr.requestid
             LATERAL VIEW explode(p.eventslist) ev AS e
             LATERAL VIEW OUTER explode(e.paperprogrstatus.attachments) av AS a
@@ -501,7 +501,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
         """
         silver_flat, silver_rows = persist_and_materialize(
             spark.sql(silver_flat_sql),
-            "ssda526_silver_flat",
+            "ssda1232_silver_flat",
             "6/7 SILVER esploso e materializzato (unica scansione)",
         )
         logging.info(
@@ -539,7 +539,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         ) THEN 'DEMAT_RECAPITO'
                         ELSE NULL
                     END AS tipo
-                FROM ssda526_silver_flat
+                FROM ssda1232_silver_flat
                 WHERE statuscode IS NOT NULL
             ),
             ranked AS (
@@ -599,7 +599,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
                         PARTITION BY requestid
                         ORDER BY clientrequesttimestamp DESC
                     ) AS rn_demat
-                FROM ssda526_silver_flat
+                FROM ssda1232_silver_flat
                 WHERE documenttype IN ('23L', 'AR')
             ) x
         """
@@ -1062,7 +1062,7 @@ def run_query(spark: SparkSession, data_max_deposito: str) -> pd.DataFrame:
             len(result),
         )
         logging.info(
-            "[SPARK] Query SSDA-526 completata in %.1f s - cluster restituiti=%s",
+            "[SPARK] Query SSDA-1232 completata in %.1f s - cluster restituiti=%s",
             perf_counter() - run_start,
             len(result),
         )
@@ -1599,7 +1599,7 @@ def render_table(
     )
 
     columns = [
-        "Cluster di feedback analogico",
+        "Cluster mancato feedback",
         "Numero oggetti",
         "Di cui con notifica\nvisualizzata",
         "Delta settimanale",
@@ -2114,7 +2114,7 @@ def generate_all_images(
     render_viewed_donut(report_df, paths["viewed_chart"])
     # Variante senza titolo interno, perche' nel completo il titolo e'
     # disegnato direttamente nella fascia del grafico (no doppio titolo).
-    viewed_chart_compact = OUTPUT_DIR / "_ssda526_viewed_for_combined.png"
+    viewed_chart_compact = OUTPUT_DIR / "_ssda1232_viewed_for_combined.png"
     render_viewed_donut(report_df, viewed_chart_compact, show_title=False)
     render_combined(
         paths["table"],
@@ -2184,7 +2184,7 @@ def main() -> None:
     try:
         logging.info("Inizializzazione SparkSession...")
         spark = SparkSession.builder.appName(
-            "SSDA-526 Aggregato settimanale feedback analogico"
+            "SSDA-1232 Aggregato settimanale feedback analogico"
         ).getOrCreate()
 
         creds = load_google_credentials(GOOGLE_SECRET_PATH)
@@ -2326,7 +2326,7 @@ def main() -> None:
         )
 
     except Exception:
-        logging.exception("Errore durante l'esecuzione del job SSDA-526.")
+        logging.exception("Errore durante l'esecuzione del job SSDA-1232.")
         raise
     finally:
         if spark is not None:
